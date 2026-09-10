@@ -4,8 +4,8 @@ const firebaseConfig = {
   projectId: "tart-manager",
   storageBucket: "tart-manager.firebasestorage.app",
   messagingSenderId: "968257225904",
-  appId: "1:968257225904:web:2bad490ccbae3d5da6e775"
+  appId: "1:968257225904:web:2bad490ccbae3d5da6e775",
+  databaseURL: "https://tart-manager-default-rtdb.firebaseio.com/"
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
+export default firebaseConfig;
