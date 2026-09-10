@@ -1,0 +1,16 @@
+{
+  "name": "峠のチーズタルト イベント販売管理",
+  "short_name": "タルト販売管理",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f3f4f6",
+  "theme_color": "#111827",
+  "icons": [
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

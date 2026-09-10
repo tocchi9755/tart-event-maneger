@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111827">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="タルト販売管理">
+<link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>峠のチーズタルト｜イベント販売管理</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Noto Sans JP",sans-serif}
+header{background:#111827;color:#fff;padding:14px 14px 12px;position:sticky;top:0;z-index:20}h1{font-size:17px;margin:0 0 3px}.sub{font-size:12px;opacity:.8}
+nav{position:sticky;top:57px;z-index:19;background:#fff;border-bottom:1px solid #ddd;padding:7px;display:flex;gap:6px;overflow:auto}nav button{white-space:nowrap;background:#eef0f3}nav .on{background:#111827;color:#fff}
+main{max-width:820px;margin:auto;padding:10px}.card{background:#fff;border-radius:14px;padding:13px;margin:9px 0;box-shadow:0 1px 4px #0001}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.row{display:flex;gap:7px;align-items:center}.between{display:flex;justify-content:space-between;align-items:center;gap:8px}
+label{display:block;font-size:12px;font-weight:700;margin:8px 0 4px}input,select{width:100%;padding:10px;border:1px solid #d1d5db;border-radius:9px;background:#fff;font-size:15px}
+button{border:0;border-radius:9px;padding:10px 12px;font-weight:700;font-size:14px;cursor:pointer;transition:transform .08s,filter .15s,box-shadow .15s}
+button:active:not(:disabled){transform:scale(.96);filter:brightness(.9);box-shadow:inset 0 1px 4px #0003}
+button:disabled{opacity:.45;cursor:not-allowed}button.flash{animation:flash .45s ease}@keyframes flash{0%{transform:scale(1)}35%{transform:scale(.96)}70%{transform:scale(1.03)}100%{transform:scale(1)}}
+#toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%) translateY(20px);background:#111827;color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;font-weight:700;opacity:0;pointer-events:none;transition:.25s;z-index:99;box-shadow:0 4px 16px #0003}#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}.primary{background:#111827;color:#fff}.soft{background:#e5e7eb}.good{background:#dcfce7;color:#166534}.warn{background:#fef3c7;color:#92400e}.bad{background:#fee2e2;color:#991b1b}
+.big{font-size:26px;font-weight:800}.muted{font-size:12px;color:#6b7280}.money{font-variant-numeric:tabular-nums}
+.products{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.quickpay{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:8px}
+.quickpay button{padding:8px 5px;font-size:12px}
+.undo{width:100%;padding:12px}.prod{text-align:left;background:#fff;border:2px solid #e5e7eb;min-height:78px}.prod b{display:block}.prod small{display:block;margin-top:5px;color:#4b5563}
+.cart{border-top:1px solid #eee}.cartline{display:grid;grid-template-columns:1fr auto auto auto;gap:6px;align-items:center;padding:8px 0;border-bottom:1px solid #eee}.mini{padding:5px 8px;background:#eee}
+.paygrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.paygrid button{padding:15px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;border-bottom:1px solid #eee;text-align:right}th:first-child,td:first-child{text-align:left}
+.slot{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #eee}.pill{font-size:11px;background:#eef0f3;border-radius:99px;padding:4px 8px}
+.notice{padding:10px;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;font-size:12px}.dangerbox{padding:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px}
+@media(min-width:650px){.products{grid-template-columns:repeat(3,1fr)}}@media print{header,nav,.no-print{display:none!important}body{background:#fff}.card{box-shadow:none;margin:0}.printarea{display:block!important}}
+.printarea{display:none}
+.cloudbar{padding:8px 12px;background:#ecfeff;border-bottom:1px solid #a5f3fc;font-size:12px}.cloudbar b{font-size:12px}.loginbox{max-width:520px;margin:35px auto}.loginbox h2{margin-top:0}.cloudok{color:#166534}.clouderr{color:#991b1b}.cloudwarn{color:#92400e}
+
+.history{display:flex;flex-direction:column;gap:7px}
+.tx{border:1px solid #e5e7eb;border-radius:12px;padding:10px;background:#fff}
+.tx.void{opacity:.6;background:#f9fafb}
+.txhead{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.txitems{font-size:13px;margin:6px 0;color:#374151}
+.txactions{display:flex;gap:6px;margin-top:8px}
+.txactions button{flex:1}
+.txno{font-weight:800}
+.editor{background:#fffbeb;border:1px solid #f3d27a}.stocktable{overflow:auto}.stockcard h3{margin:0}.stocktotal{font-size:25px;font-weight:800}.stocknote{padding:9px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;font-size:12px}
+.editrow{display:grid;grid-template-columns:1fr 70px 85px;gap:6px;align-items:center;margin:6px 0}
+.editrow input{width:100%}
+@media(max-width:520px){.editrow{grid-template-columns:1fr 64px 78px}.txactions{flex-wrap:wrap}}
+</style>
+</head>
+<body>
+<header><h1>峠のチーズタルト｜イベント販売管理</h1><div class="sub" id="head"></div></header>
+<div id="cloudbar" class="cloudbar">☁ クラウド同期を準備しています…</div><nav id="nav"></nav><main id="app"></main><div id="toast"></div>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.18.0/firebase-database-compat.js"></script>
+<script src="./firebase-config.js"></script>
+<script>
+const KEY="toge_tart_manager_final_v2";
+const base=[["plain","プレーン",400],["double","Wチーズ",400],["choco","チョコレート",400],["has","ハスカップ",400],["sea","シーベリー",400],["blue","ブルーベリー",400],["white","白いガトーショコラ",450]];
+let db=JSON.parse(localStorage.getItem(KEY)||"null")||{events:[],products:base.map(x=>({id:x[0],name:x[1],price:x[2]})),staff:["スタッフ1","スタッフ2"],payments:["現金","PayPay"],tab:"events"};
+let cloudUser=null, cloudReady=false, cloudRef=null, cloudApplying=false, cloudFirstSync=true;
+const localSave=()=>localStorage.setItem(KEY,JSON.stringify(db));
+const save=()=>{localSave();if(cloudReady&&cloudRef&&!cloudApplying){clearTimeout(window.__cloudSaveTimer);window.__cloudSaveTimer=setTimeout(()=>cloudRef.set(db).catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr")),120)}};
+function setCloudStatus(msg,cls=""){const el=document.getElementById("cloudbar");if(el)el.innerHTML=`<b class="${cls}">${msg}</b>`}
+function cloudLoginView(){return `<div class="card loginbox"><h2>☁ 会計データをクラウド同期</h2><p class="muted">PC・iPhone・Androidで同じ会計データを使うには、同じメールアドレスでログインしてください。</p><label>メールアドレス</label><input id="cloudEmail" type="email" autocomplete="username" placeholder="例：xxxx@example.com"><label>パスワード</label><input id="cloudPassword" type="password" autocomplete="current-password" placeholder="6文字以上"><div class="row" style="margin-top:10px"><button class="primary" style="flex:1" onclick="cloudSignIn()">ログイン</button><button class="soft" style="flex:1" onclick="cloudSignUp()">新規登録</button></div><p class="muted" style="margin-bottom:0">※このアプリ用のアカウントです。Google等の外部サービスのパスワードを入力する必要はありません。</p></div>`}
+function cloudSetupView(){return `<div class="card loginbox"><h2>☁ クラウド設定が未完了です</h2><p>Firebaseの設定がまだ入っていません。まずFirebaseプロジェクトを作成し、発行された設定値をこのアプリに入れてから公開します。</p><div class="notice">この段階では現在の端末のデータは消えません。クラウド設定完了後に初回同期を行います。</div></div>`}
+async function cloudSignIn(){const email=document.getElementById("cloudEmail")?.value.trim(),pw=document.getElementById("cloudPassword")?.value||"";if(!email||!pw)return alert("メールアドレスとパスワードを入力してください。");try{await firebase.auth().signInWithEmailAndPassword(email,pw)}catch(err){alert("ログインできませんでした。\n"+(err?.message||err))}}
+async function cloudSignUp(){const email=document.getElementById("cloudEmail")?.value.trim(),pw=document.getElementById("cloudPassword")?.value||"";if(!email||!pw)return alert("メールアドレスとパスワードを入力してください。");if(pw.length<6)return alert("パスワードは6文字以上にしてください。");try{await firebase.auth().createUserWithEmailAndPassword(email,pw);alert("アカウントを作成しました。\nこのメールアドレスとパスワードをPC・iPhone・Androidで共通して使ってください。")}catch(err){alert("新規登録できませんでした。\n"+(err?.message||err))}}
+async function cloudLogout(){await firebase.auth().signOut()}
+function cloudInit(){
+  const cfg=window.TART_FIREBASE_CONFIG||{};
+  if(!cfg.apiKey||!cfg.projectId||!cfg.databaseURL){setCloudStatus("⚠ クラウド設定待ち","cloudwarn");document.getElementById("app").innerHTML=cloudSetupView();return;}
+  try{firebase.initializeApp(cfg);
+    firebase.auth().onAuthStateChanged(user=>{
+      cloudUser=user||null;cloudReady=false;cloudRef=null;cloudFirstSync=true;
+      if(!user){setCloudStatus("☁ 未ログイン");document.getElementById("app").innerHTML=cloudLoginView();return;}
+      cloudRef=firebase.database().ref("users/"+user.uid+"/app");
+      setCloudStatus("☁ クラウド同期中…");
+      cloudRef.once("value").then(snap=>{
+        const remote=snap.val();
+        if(remote){db=remote;localSave();cloudFirstSync=false;cloudReady=true;setCloudStatus("☁ 同期中："+user.email,"cloudok");render();}
+        else{cloudReady=true;cloudFirstSync=false;localSave();cloudRef.set(db).then(()=>{setCloudStatus("☁ 同期中："+user.email,"cloudok");render()}).catch(err=>setCloudStatus("⚠ 初回保存エラー："+(err?.message||err),"clouderr"));}
+        cloudRef.on("value",snap2=>{if(!cloudReady||cloudApplying)return;const v=snap2.val();if(v){cloudApplying=true;db=v;localSave();render();cloudApplying=false;setCloudStatus("☁ 同期中："+user.email,"cloudok")}});
+      }).catch(err=>{setCloudStatus("⚠ クラウド接続エラー："+(err?.message||err),"clouderr");document.getElementById("app").innerHTML=cloudLoginView()});
+    });
+  }catch(err){setCloudStatus("⚠ Firebase初期化エラー："+(err?.message||err),"clouderr");document.getElementById("app").innerHTML=cloudSetupView()}
+}
+
+const CLEAR_MARK="toge_tart_manager_clear_accounts_20260902";
+const STOCK_V2_MARK="toge_tart_manager_stock_v2_20260907";
+if(!localStorage.getItem(STOCK_V2_MARK)){(db.events||[]).forEach(ev=>{ev.stock=ev.stock||[];let soldBy={};(ev.transactions||[]).filter(t=>t.status!=="void").forEach(t=>t.items.forEach(i=>soldBy[i.productId]=(soldBy[i.productId]||0)+Number(i.qty||0)));ev.stock.forEach(s=>{let sold=soldBy[s.productId]||0,total=Math.max(0,Number(s.in||0)+Number(s.add||0)-sold);s.show=Math.max(0,Math.min(total,Number(s.in||0)-sold));s.store=Math.max(0,total-s.show)});});localSave();localStorage.setItem(STOCK_V2_MARK,"1")}
+
+if(!localStorage.getItem(CLEAR_MARK)){(db.events||[]).forEach(ev=>{ev.transactions=[];ev.cart=[];ev.closed={};ev.editTxId=null;ev.fees={};});save();localStorage.setItem(CLEAR_MARK,"1");}
+function toast(msg){let t=document.getElementById("toast");if(!t)return;t.textContent=msg;t.classList.add("show");clearTimeout(window.__toastTimer);window.__toastTimer=setTimeout(()=>t.classList.remove("show"),1400)}
+function flash(el,msg){if(el){el.classList.remove("flash");void el.offsetWidth;el.classList.add("flash")}if(msg)toast(msg)}
+const e=()=>db.events.find(x=>x.id===location.hash.slice(1))||db.events[0];
+const yen=n=>"¥"+Math.round(n||0).toLocaleString();
+const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+
+// 既存v2データを新しい会計番号形式へ移行
+(db.events||[]).forEach(ev=>{ev.transactions=ev.transactions||[];let n=1;ev.transactions.slice().sort((a,b)=>(a.id||0)-(b.id||0)).forEach(t=>{if(!t.groupNo)t.groupNo=n;n=Math.max(n,(Number(t.groupNo)||0)+1)});ev.cart=ev.cart||[]});
+function jpToday(){return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date())}
+function localDateValue(){return jpToday()}
+function dayList(x){let a=[],d=new Date(x.start+"T00:00:00"),z=new Date(x.end+"T00:00:00");while(d<=z){a.push(d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"));d.setDate(d.getDate()+1)}return a}
+function selectedDay(x){let t=jpToday(),days=dayList(x);return x.selectedDay&&days.includes(x.selectedDay)?x.selectedDay:(days.includes(t)?t:days[0])}
+function transactions(x,day=null){return (x?.transactions||[]).filter(t=>t.status!=="void"&&(!day||t.day===day))}
+function allTransactions(x,day=null){return (x?.transactions||[]).filter(t=>!day||t.day===day)}
+function nextGroupNo(x){return Math.max(0,...(x.transactions||[]).map(t=>Number(t.groupNo)||0))+1}
+function sales(x,day=null){return transactions(x,day).reduce((s,t)=>s+t.total,0)}
+function qty(x,pid,day=null){return transactions(x,day).reduce((s,t)=>s+t.items.filter(i=>i.productId===pid).reduce((a,i)=>a+i.qty,0),0)}
+function stockMap(x){let m={};db.products.forEach(p=>m[p.id]={in:0,add:0,show:0,store:0});(x.stock||[]).forEach(s=>{if(m[s.productId]){m[s.productId].in=Number(s.in||0);m[s.productId].add=Number(s.add||0);m[s.productId].show=Number(s.show||0);m[s.productId].store=Number(s.store||0)}});db.products.forEach(p=>{let sold=qty(x,p.id);m[p.id].remaining=Math.max(0,m[p.id].show+m[p.id].store);m[p.id].totalIn=m[p.id].in+m[p.id].add;m[p.id].sold=sold});return m}
+function renderNav(){let x=e();document.getElementById("head").textContent=x?`${x.name}　${x.start} ～ ${x.end}`:"イベントを登録してください";let arr=x?[["sale","販売"],["inventory","在庫"],["daily","日報・締め"],["summary","イベント集計"],["settings","設定"]]:[["events","イベント"],["settings","商品・設定"]];document.getElementById("nav").innerHTML=arr.map(a=>`<button class="${db.tab===a[0]?'on':''}" onclick="db.tab='${a[0]}';save();render()">${a[1]}</button>`).join("")}
+function render(){renderNav();let x=e();let f={events:events,sale:sale,inventory:inventory,daily:daily,summary:summary,settings:settings}[db.tab]||events;document.getElementById("app").innerHTML=f(x)||""}
+function events(){return `<div class="card"><h2>イベント一覧</h2>${db.events.length?db.events.map(x=>`<div class="card" style="margin:7px 0"><div class="between"><div><b>${esc(x.name)}</b><div class="muted">${x.start} ～ ${x.end}</div></div><button class="primary" onclick="location.hash='${x.id}';db.tab='sale';render()">開く</button></div></div>`).join(""):`<p class="muted">まだイベントがありません。</p>`}</div><div class="card"><button class="primary" onclick="newEvent()">＋新しいイベントを作る</button></div>`}
+function daySelect(x){let d=selectedDay(x);return `<label>販売日</label><select onchange="x.selectedDay=this.value;save();render()">${dayList(x).map(z=>`<option ${z===d?'selected':''}>${z}</option>`).join("")}</select>`}
+function sale(x){if(!x)return events();let d=selectedDay(x);x.cart=x.cart||[];let sm=stockMap(x),closed=!!x.closed?.[d];return `${x.editTxId?txEditor(x,x.editTxId):""}<div class="card"><div class="grid"><div>${daySelect(x)}</div><div style="text-align:right"><div class="muted">本日の売上</div><div class="big">${yen(sales(x,d))}</div><div class="muted">${transactions(x,d).length}組</div></div></div></div>
+<div class="card">
+<div class="between"><h3 style="margin:0">かんたん会計</h3><span class="pill">${x.slot||1}時間ごと集計</span></div>
+<p class="muted">1個だけなら支払方法を押すだけ。複数商品は「カートに追加」→会計確定。</p>
+<div class="products">${db.products.map(p=>`<div class="prod">
+<b>${esc(p.name)}</b><small>${yen(x.prices?.[p.id]??p.price)}　残 ${sm[p.id].remaining}個</small>
+<div class="quickpay">
+<button class="soft" ${closed||sm[p.id].remaining<1?'disabled':''} onclick="add('${p.id}',this)">カートに追加</button>
+${db.payments.map(pay=>`<button class="${pay==='現金'?'good':'primary'}" ${closed||sm[p.id].remaining<1?'disabled':''} onclick="quickSale('${p.id}','${esc(pay)}',this)">${esc(pay)} +1</button>`).join("")}
+</div></div>`).join("")}</div>
+</div>
+${cartHTML(x)}
+<div class="card"><h3>会計履歴（${d}）</h3>${historyHTML(x,d)}</div>
+<div class="card"><div class="row"><button class="warn undo" ${closed?'disabled':''} onclick="undoLastSale()">↩ 直前の会計を取り消す</button></div>
+<div class="row" style="margin-top:7px"><button class="soft" style="flex:1" onclick="document.getElementById('cartTop').scrollIntoView({behavior:'smooth'})">まとめ会計</button><button class="soft" style="flex:1" onclick="db.tab='daily';save();render()">今日の日報</button></div></div>
+<div class="card"><h3>時間帯別</h3>${slots(x,d)}</div><div class="card"><button class="soft" onclick="printDaily('${d}')">🖨 この日の日報を印刷</button></div>`}
+function cartHTML(x){if(!x.cart.length)return `<div id="cartTop" class="card muted">複数商品をまとめる場合は、上の商品で「カートに追加」を押してください。</div>`;let total=x.cart.reduce((s,i)=>s+i.qty*i.price,0);return `<div id="cartTop" class="card"><h3>今回のお会計</h3><div class="cart">${x.cart.map(i=>`<div class="cartline"><span>${esc(i.name)}</span><span>${yen(i.price)}</span><span><button class="mini" onclick="chg('${i.productId}',-1)">−</button> ${i.qty} <button class="mini" onclick="chg('${i.productId}',1)">＋</button></span><b>${yen(i.qty*i.price)}</b></div>`).join("")}</div><div class="between" style="margin-top:10px"><b>合計</b><b class="big">${yen(total)}</b></div><div class="paygrid" style="margin-top:10px">${db.payments.map(p=>`<button class="${p==='現金'?'good':'primary'}" onclick="checkout('${esc(p)}',this)">${esc(p)}で確定</button>`).join("")}</div><button class="bad" style="width:100%;margin-top:8px" onclick="x.cart=[];save();render()">カート取消</button></div>`}
+function historyHTML(x,d){let arr=allTransactions(x,d).sort((a,b)=>a.id-b.id);if(!arr.length)return `<p class="muted">まだ会計がありません。</p>`;return `<div class="history">${arr.map(t=>{let voided=t.status==="void",dt=new Date(t.timestamp);return `<div class="tx ${voided?'void':''}"><div class="txhead"><span class="txno">${Number(t.groupNo)||'?'}組目 ${voided?'<span class="pill">取消</span>':''}</span><b>${voided?'—':yen(t.total)}</b></div><div class="muted">${dt.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})}　${esc(t.payment||'')}</div><div class="txitems">${t.items.map(i=>`${esc(i.name)} ×${i.qty}`).join(' ／ ')}</div>${!voided?`<div class="txactions"><button class="soft" onclick="openTx('${t.id}')">編集</button><button class="bad" onclick="voidTx('${t.id}')">この会計を取消</button></div>`:`<div class="muted">この会計は売上・販売数から除外されています。</div>`}</div>`}).join("")}</div><div class="between" style="margin-top:10px"><b>本日の合計</b><b class="big">${yen(sales(x,d))}</b></div><div class="muted">販売組数：${transactions(x,d).length}組</div>`}
+function txEditor(x,id){let t=(x.transactions||[]).find(q=>String(q.id)===String(id));if(!t)return "";let total=t.items.reduce((s,i)=>s+i.qty*i.price,0);return `<div class="card editor"><div class="between"><h3>会計編集：${Number(t.groupNo)||'?'}組目</h3><button class="soft" onclick="x.editTxId=null;save();render()">閉じる</button></div><p class="muted">価格は会計時の価格を維持します。数量を変更するとこの会計だけ再計算します。</p>${db.products.map(p=>{let i=t.items.find(q=>q.productId===p.id),q=i?.qty||0,price=i?.price??(x.prices?.[p.id]??p.price);return `<div class="editrow"><span>${esc(p.name)}<small class="muted"> ${yen(price)}</small></span><input id="txq_${p.id}" type="number" min="0" value="${q}"><span>${yen(q*price)}</span></div>`}).join("")}<label>支払方法</label><select id="txpay">${db.payments.map(p=>`<option ${p===t.payment?'selected':''}>${esc(p)}</option>`).join("")}</select><div class="between" style="margin-top:10px"><b>合計</b><b class="big" id="txTotal">${yen(total)}</b></div><button class="primary" style="width:100%;margin-top:8px" onclick="saveTx('${t.id}')">この会計を更新</button></div>`}
+function openTx(id){let x=e();x.editTxId=id;save();render();setTimeout(()=>document.querySelector('.editor')?.scrollIntoView({behavior:'smooth',block:'center'}),50)}
+function saveTx(id){let x=e(),t=x.transactions.find(q=>String(q.id)===String(id));if(!t)return;if(x.closed?.[t.day]){alert("締め済みの日は変更できません。");return}
+let items=[];db.products.forEach(p=>{let q=Math.max(0,Number(document.getElementById('txq_'+p.id)?.value)||0);if(q){let old=t.items.find(i=>i.productId===p.id),price=old?.price??Number(x.prices?.[p.id]??p.price);items.push({productId:p.id,name:p.name,price,qty:q})}});
+if(!items.length){alert("商品を1つ以上選択してください。");return}
+let sm=stockMap(x);for(let i of items){let oldQty=t.items.filter(q=>q.productId===i.productId).reduce((s,q)=>s+q.qty,0);let available=(sm[i.productId]?.remaining||0)+oldQty;if(i.qty>available){alert(`${i.name}の在庫が不足しています。`);return}}
+let oldTotal=t.total;t.items=items;t.total=items.reduce((s,i)=>s+i.qty*i.price,0);t.payment=document.getElementById('txpay').value;t.editedAt=new Date().toISOString();t.editNote=`${yen(oldTotal)} → ${yen(t.total)}`;x.editTxId=null;save();render()}
+function add(pid,btn){let x=e(),p=db.products.find(q=>q.id===pid);if(!p)return;let sm=stockMap(x),i=x.cart.find(q=>q.productId===pid);if((sm[pid]?.remaining||0)<=((i?.qty)||0)){alert("在庫が不足しています。");return}let price=Number(x.prices?.[pid]??p.price);if(i)i.qty++;else x.cart.push({productId:pid,name:p.name,price,qty:1});save();flash(btn,"カートに追加しました");render()}
+function chg(pid,n){let x=e(),i=x.cart.find(q=>q.productId===pid);if(!i)return;if(n>0){let sm=stockMap(x);if((sm[pid]?.remaining||0)<=i.qty){alert("在庫が不足しています。");return}}i.qty+=n;if(i.qty<1)x.cart=x.cart.filter(q=>q!==i);save();render()}
+function createTransaction(x,d,items,pay){let now=new Date(),t={id:Date.now()+Math.floor(Math.random()*1000),groupNo:nextGroupNo(x),timestamp:now.toISOString(),day:d,items:items.map(i=>({...i})),total:items.reduce((s,i)=>s+i.qty*i.price,0),payment:pay,status:"completed"};x.transactions.push(t);return t}
+function quickSale(pid,pay,btn){let x=e(),d=selectedDay(x);if(x.closed?.[d]){alert("この日は締め済みです。");return}let sm=stockMap(x),p=db.products.find(q=>q.id===pid);if(!p||(sm[pid]?.remaining||0)<1){alert("この商品の在庫がありません。");return}let price=Number(x.prices?.[pid]??p.price);createTransaction(x,d,[{productId:pid,name:p.name,price,qty:1}],pay);save();flash(btn,`${p.name}を${pay}で会計しました`);render()}
+function undoLastSale(){let x=e(),d=selectedDay(x),arr=allTransactions(x,d).filter(t=>t.status!=="void");if(!arr.length){alert("取り消せる販売がありません。");return}let last=arr[arr.length-1];voidTx(String(last.id))}
+function voidTx(id){let x=e(),t=x.transactions.find(q=>String(q.id)===String(id));if(!t||t.status==="void")return;if(x.closed?.[t.day]){alert("締め済みの日は変更できません。");return}if(!confirm(`${Number(t.groupNo)||'?'}組目の会計 ${yen(t.total)} を取り消しますか？\\n売上・販売数・在庫集計から除外されます。`))return;t.status="void";t.voidedAt=new Date().toISOString();save();render()}
+function checkout(pay,btn){let x=e(),d=selectedDay(x);if(x.closed?.[d]){alert("この日は締め済みです。");return}let sm=stockMap(x);for(let i of x.cart)if((sm[i.productId]?.remaining||0)<i.qty){alert("在庫が不足しています。");return}if(!x.cart.length)return;createTransaction(x,d,x.cart,pay);x.cart=[];save();flash(btn,`${pay}で会計を確定しました`);render()}
+function slots(x,d){let [a,b]=x.open.split(":").map(Number),[c,f]=x.close.split(":").map(Number),start=a*60+b,end=c*60+f,step=(x.slot||1)*60,ts=transactions(x,d);let out="";for(let m=start;m<end;m+=step){let z=Math.min(m+step,end),arr=ts.filter(t=>{let q=new Date(t.timestamp),v=q.getHours()*60+q.getMinutes();return v>=m&&v<z}),s=arr.reduce((a,t)=>a+t.total,0),q=arr.reduce((a,t)=>a+t.items.reduce((b,i)=>b+i.qty,0),0);out+=`<div class="slot"><span>${fmt(m)} ～ ${fmt(z)}</span><b>${q}個 / ${yen(s)}</b></div>`}return out}
+function fmt(m){return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0")}
+function inventory(x){let m=stockMap(x);return `<div class="card"><h2>在庫管理</h2><p class="muted">初回搬入はショーケースへ、追加搬入はストッカーへ。販売するとショーケースから減ります。ストッカーからショーケースへ移動しても総在庫は変わりません。</p><div class="stocknote">総在庫 ＝ ショーケース ＋ ストッカー<br>初回搬入 ＋ 追加搬入 − 販売数 ＝ 総在庫</div></div>${db.products.map(p=>{let q=m[p.id];return `<div class="card stockcard" data-stock-product="${p.id}"><div class="between"><h3>${esc(p.name)}</h3><span class="stocktotal" id="total_${p.id}">${q.remaining}個</span></div><div class="grid"><div><label>初回搬入（ショーケースへ）</label><input id="in_${p.id}" type="number" min="0" value="${q.in}" oninput="previewStock('${p.id}')"></div><div><label>追加搬入（ストッカーへ）</label><input id="add_${p.id}" type="number" min="0" value="${q.add}" oninput="previewStock('${p.id}')"></div><div><label>ショーケース</label><input id="show_${p.id}" type="number" min="0" value="${q.show}" oninput="previewStock('${p.id}')"></div><div><label>ストッカー</label><input id="store_${p.id}" type="number" min="0" value="${q.store}" oninput="previewStock('${p.id}')"></div></div><div class="muted" style="margin-top:7px">販売済み：${q.sold}個　／　総搬入：${q.totalIn}個</div></div>`}).join("")}<div class="card"><button class="primary" style="width:100%;padding:14px" onclick="saveAllStock()">💾 すべて保存</button><p class="muted" style="margin:7px 0 0">入力した内容を全商品まとめて保存します。ストッカーを減らした分はショーケースへ自動で移動します。</p></div>`}
+function previewStock(pid){let x=e(),m=stockMap(x),old=m[pid],inEl=document.getElementById("in_"+pid),addEl=document.getElementById("add_"+pid),showEl=document.getElementById("show_"+pid),storeEl=document.getElementById("store_"+pid);if(!old||!showEl||!storeEl)return;let ni=Math.max(0,Number(inEl.value)||0),na=Math.max(0,Number(addEl.value)||0),ns=Math.max(0,Number(showEl.value)||0),nst=Math.max(0,Number(storeEl.value)||0);let deltaIn=ni-old.in,deltaAdd=na-old.add;if(deltaIn>0)ns+=deltaIn;else if(deltaIn<0)ns=Math.max(0,ns+deltaIn);if(deltaAdd>0)nst+=deltaAdd;else if(deltaAdd<0)nst=Math.max(0,nst+deltaAdd);let manualStoreDelta=(nst-old.store)-deltaAdd;if(manualStoreDelta<0)ns+=-manualStoreDelta;else if(manualStoreDelta>0)ns=Math.max(0,ns-manualStoreDelta);showEl.value=Math.round(ns);storeEl.value=Math.round(nst);let total=Math.max(0,ns+nst);let totalEl=document.getElementById("total_"+pid);if(totalEl)totalEl.textContent=total+"個"}
+function saveAllStock(){let x=e();if(!x)return;x.stock=x.stock||[];let m=stockMap(x),newStock=[];for(let p of db.products){let old=m[p.id]||{in:0,add:0,show:0,store:0};let ni=Math.max(0,Number(document.getElementById("in_"+p.id)?.value)||0),na=Math.max(0,Number(document.getElementById("add_"+p.id)?.value)||0),ns=Math.max(0,Number(document.getElementById("show_"+p.id)?.value)||0),nst=Math.max(0,Number(document.getElementById("store_"+p.id)?.value)||0);let sold=qty(x,p.id),expected=Math.max(0,ni+na-sold),actual=ns+nst;if(actual!==expected){alert(`${p.name}の在庫が合いません。\n総在庫は「初回搬入＋追加搬入−販売数」になるようにしてください。\n現在：${actual}個 ／ 正しい総在庫：${expected}個`);return}newStock.push({productId:p.id,in:ni,add:na,show:ns,store:nst})}x.stock=newStock;save();render();toast("全商品の在庫を保存しました")}
+function payTotals(x,d){let m={};db.payments.forEach(p=>m[p]=0);transactions(x,d).forEach(t=>m[t.payment]=(m[t.payment]||0)+t.total);return m}
+function daily(x){if(!x)return"";let d=selectedDay(x),pm=payTotals(x,d),fee=x.feeMode==="daily"?(x.fees?.[d]||0):0,closed=x.closed?.[d];return `<div class="card"><div class="between"><h2>日報・締め</h2><span class="pill">${closed?"締め済み":"未締め"}</span></div>${daySelect(x)}${closed?`<div class="dangerbox" style="margin-top:8px">この日は締め済みです。新しい会計は登録しないでください。</div>`:""}<div class="grid" style="margin-top:9px"><div><div class="muted">売上</div><div class="big">${yen(sales(x,d))}</div></div><div><div class="muted">利益</div><div class="big">${yen(sales(x,d)-fee)}</div></div></div><h3>支払方法</h3>${Object.entries(pm).map(([p,v])=>`<div class="between"><span>${esc(p)}</span><b>${yen(v)}</b></div>`).join("")}<h3>商品別</h3><table><tr><th>商品</th><th>数量</th><th>売上</th></tr>${db.products.map(p=>{let q=qty(x,p.id,d),v=transactions(x,d).reduce((s,t)=>s+t.items.filter(i=>i.productId===p.id).reduce((a,i)=>a+i.qty*i.price,0),0);return `<tr><td>${esc(p.name)}</td><td>${q}</td><td>${yen(v)}</td></tr>`}).join("")}</table><h3>手数料・経費</h3>${x.feeMode==="daily"?`<input id="fee" type="number" value="${fee}"><button class="soft" style="margin-top:6px" onclick="setFee('${d}')">保存</button>`:`<p>イベント合算：${yen(x.feeTotal)}</p>`}<div class="row" style="margin-top:10px"><button class="primary" onclick="closeDay('${d}')">${closed?"締めを再確認":"この日を締める"}</button><button class="soft" onclick="printDaily('${d}')">🖨 印刷</button></div></div>`}
+function setFee(d){let x=e();x.fees=x.fees||{};x.fees[d]=Number(document.getElementById("fee").value)||0;save();render()}
+function closeDay(d){let x=e();if(!confirm(`${d}を締めます。締め後も会計データは残ります。よろしいですか？`))return;x.closed=x.closed||{};x.closed[d]=new Date().toISOString();save();render()}
+function summary(x){let fee=x.feeMode==="daily"?Object.values(x.fees||{}).reduce((a,b)=>a+b,0):Number(x.feeTotal||0),total=sales(x),allq=transactions(x).reduce((a,t)=>a+t.items.reduce((b,i)=>b+i.qty,0),0);return `<div class="card"><h2>イベント全体集計</h2><div class="grid"><div><div class="muted">総販売数</div><div class="big">${allq}個</div></div><div><div class="muted">総売上</div><div class="big">${yen(total)}</div></div></div><p>手数料・経費：<b>${yen(fee)}</b>　利益：<b>${yen(total-fee)}</b></p><h3>日別</h3><table><tr><th>日付</th><th>売上</th><th>締め</th></tr>${dayList(x).map(d=>`<tr><td>${d}</td><td>${yen(sales(x,d))}</td><td>${x.closed?.[d]?"済":"未"}</td></tr>`).join("")}</table><h3>商品別</h3><table><tr><th>商品</th><th>数量</th><th>売上</th></tr>${db.products.map(p=>`<tr><td>${esc(p.name)}</td><td>${qty(x,p.id)}</td><td>${yen(transactions(x).reduce((s,t)=>s+t.items.filter(i=>i.productId===p.id).reduce((a,i)=>a+i.qty*i.price,0),0))}</td></tr>`).join("")}</table><button class="soft" onclick="printSummary()">🖨 イベント集計を印刷</button></div>`}
+function settings(x){return `<div class="card"><h2>${x?"イベント設定":"新規イベント設定"}</h2><div class="grid"><div><label>イベント名</label><input id="ename" value="${esc(x?.name||"")}"></div><div><label>時間帯集計</label><select id="slot"><option value="1" ${(x?.slot||1)==1?"selected":""}>1時間ごと</option><option value="2" ${(x?.slot||1)==2?"selected":""}>2時間ごと</option><option value="3" ${(x?.slot||1)==3?"selected":""}>3時間ごと</option></select></div><div><label>開始日</label><input id="start" type="date" value="${x?.start||jpToday()}"></div><div><label>終了日</label><input id="end" type="date" value="${x?.end||jpToday()}"></div><div><label>販売開始</label><input id="open" type="time" value="${x?.open||"10:00"}"></div><div><label>販売終了</label><input id="close" type="time" value="${x?.close||"17:00"}"></div><div><label>経費入力</label><select id="feeMode"><option value="daily" ${x?.feeMode!=="total"?"selected":""}>日ごと</option><option value="total" ${x?.feeMode==="total"?"selected":""}>イベント合算</option></select></div><div><label>合算額</label><input id="feeTotal" type="number" value="${x?.feeTotal||0}"></div></div><button class="primary" style="margin-top:9px" onclick="saveEvent()">保存</button>${x?` <button class="bad" onclick="delEvent()">イベント削除</button>`:""}</div>
+${x?`<div class="card"><h3>イベント価格</h3><p class="muted">変更後の会計から新価格。過去の会計価格は変わりません。</p>${db.products.map(p=>`<div class="row" style="margin:6px 0"><span style="flex:1">${esc(p.name)}</span><input id="ep_${p.id}" type="number" value="${x.prices?.[p.id]??p.price}"></div>`).join("")}<button class="soft" onclick="savePrices()">保存</button></div>`:""}
+<div class="card"><h3>商品マスター</h3>${db.products.map(p=>`<div class="row" style="margin:6px 0"><input id="n_${p.id}" value="${esc(p.name)}"><input id="p_${p.id}" type="number" value="${p.price}"><button class="soft" onclick="saveProduct('${p.id}')">保存</button></div>`).join("")}<button class="soft" onclick="addProduct()">＋商品追加</button></div>
+<div class="card"><h3>スタッフ</h3>${db.staff.map((s,i)=>`<div class="row" style="margin:6px 0"><input id="s_${i}" value="${esc(s)}"><button class="soft" onclick="saveStaff(${i})">保存</button><button class="bad" onclick="removeStaff(${i})">削除</button></div>`).join("")}<button class="soft" onclick="addStaff()">＋追加</button></div>
+<div class="card"><h3>支払方法</h3>${db.payments.map((s,i)=>`<div class="row" style="margin:6px 0"><input id="m_${i}" value="${esc(s)}"><button class="soft" onclick="savePay(${i})">保存</button><button class="bad" onclick="removePay(${i})">削除</button></div>`).join("")}<button class="soft" onclick="addPay()">＋追加</button></div>
+<div class="card"><h3>クラウド同期</h3><p class="muted">ログイン中：${esc(cloudUser?.email||"未ログイン")}</p>${cloudUser?`<button class="soft" onclick="cloudLogout()">ログアウト</button>`:`<p class="muted">ログインすると、この端末の会計データをPC・iPhone・Androidで共有できます。</p>`}</div>
+<div class="card"><h3>データ保護</h3><p class="muted">端末故障・ブラウザ消去に備え、イベント終了後などにバックアップしてください。</p><button class="soft" onclick="backup()">バックアップ保存</button><label>バックアップ復元</label><input type="file" accept=".json" onchange="restore(this)"><div class="dangerbox" style="margin-top:14px"><b>全データを初期化</b><p class="muted">イベント・会計履歴・在庫・設定をすべて削除して、アプリを最初の状態に戻します。</p><button class="bad" onclick="resetAll()">⚠ すべて初期化する</button></div></div>
+<div class="notice">iPhone運用：HTTPSで公開したページをSafariで開き、「共有 → ホーム画面に追加 → Webアプリとして開く」でホーム画面に追加します。</div>`}
+function newEvent(){db.events.unshift({id:"e"+Date.now(),name:"新しいイベント",start:jpToday(),end:jpToday(),open:"10:00",close:"17:00",slot:1,feeMode:"daily",feeTotal:0,fees:{},stock:[],transactions:[],prices:Object.fromEntries(db.products.map(p=>[p.id,p.price])),closed:{},cart:[]});location.hash=db.events[0].id;db.tab="settings";save();render()}
+function saveEvent(){let x=e();if(!x){newEvent();return}let st=document.getElementById("start").value,en=document.getElementById("end").value;if(!st||!en||en<st)return alert("開催期間を正しく入力してください");Object.assign(x,{name:document.getElementById("ename").value,start:st,end:en,open:document.getElementById("open").value,close:document.getElementById("close").value,slot:Number(document.getElementById("slot").value),feeMode:document.getElementById("feeMode").value,feeTotal:Number(document.getElementById("feeTotal").value)||0});x.prices=x.prices||{};db.products.forEach(p=>x.prices[p.id]=x.prices[p.id]??p.price);save();db.tab="sale";render()}
+function delEvent(){let x=e();if(confirm("このイベントの全データを削除しますか？")){db.events=db.events.filter(q=>q.id!==x.id);location.hash="";db.tab="events";save();render()}}
+function savePrices(){let x=e();x.prices=x.prices||{};db.products.forEach(p=>x.prices[p.id]=Number(document.getElementById("ep_"+p.id).value)||0);save();render()}
+function saveProduct(id){let p=db.products.find(q=>q.id===id);p.name=document.getElementById("n_"+id).value;p.price=Number(document.getElementById("p_"+id).value)||0;save();render()}
+function addProduct(){db.products.push({id:"p"+Date.now(),name:"新商品",price:400});save();render()}
+function saveStaff(i){db.staff[i]=document.getElementById("s_"+i).value;save();render()}function removeStaff(i){db.staff.splice(i,1);save();render()}function addStaff(){db.staff.push("新スタッフ");save();render()}
+function savePay(i){db.payments[i]=document.getElementById("m_"+i).value;save();render()}function removePay(i){if(db.payments.length>1)db.payments.splice(i,1);save();render()}function addPay(){db.payments.push("新しい支払方法");save();render()}
+function resetAll(){if(!confirm("本当にすべてのデータを初期化しますか？\nイベント、会計履歴、在庫、商品・スタッフ・支払方法の設定もすべて削除されます。\nこの操作は元に戻せません。"))return;if(!confirm("最終確認です。本当にリセットしますか？"))return;localStorage.removeItem(KEY);location.hash="";location.reload()}
+function backup(){let a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(db,null,2)],{type:"application/json"}));a.download="tart-event-backup-"+new Date().toISOString().slice(0,10)+".json";a.click()}
+function restore(i){let f=i.files[0];if(!f)return;let r=new FileReader();r.onload=()=>{try{db=JSON.parse(r.result);save();render();alert("復元しました")}catch(_){alert("読み込めないバックアップです")}};r.readAsText(f)}
+function printDaily(d){let x=e(),pm=payTotals(x,d),fee=x.feeMode==="daily"?(x.fees?.[d]||0):0,app=document.getElementById("app"),old=app.innerHTML;app.innerHTML=`<div class="printarea"><h1>部門別売上日報（スイーツ工房イベント用）</h1><h2>${esc(x.name)}</h2><p>${d}　${x.open}～${x.close}</p><h2>売上：${yen(sales(x,d))}</h2>${Object.entries(pm).map(([p,v])=>`<p>${esc(p)}：${yen(v)}</p>`).join("")}<h3>商品別</h3>${db.products.map(p=>`<p>${esc(p.name)}：${qty(x,p.id,d)}個</p>`).join("")}<h3>時間帯別</h3>${slots(x,d)}<h3>手数料・経費：${yen(fee)}</h3><h2>利益：${yen(sales(x,d)-fee)}</h2></div>`;window.print();app.innerHTML=old}
+function printSummary(){let x=e(),app=document.getElementById("app"),old=app.innerHTML,fee=x.feeMode==="daily"?Object.values(x.fees||{}).reduce((a,b)=>a+b,0):x.feeTotal;app.innerHTML=`<div class="printarea"><h1>${esc(x.name)} イベント集計</h1><p>${x.start} ～ ${x.end}</p><h2>総売上：${yen(sales(x))}</h2><h2>手数料・経費：${yen(fee)}</h2><h2>利益：${yen(sales(x)-fee)}</h2>${dayList(x).map(d=>`<p>${d}　売上 ${yen(sales(x,d))}</p>`).join("")}</div>`;window.print();app.innerHTML=old}
+if("serviceWorker"in navigator)navigator.serviceWorker.register("./sw.js").catch(()=>{});
+cloudInit();
+</script></body></html>
