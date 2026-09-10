@@ -1,7 +1,7 @@
-var firebaseConfig = {
+window.TART_FIREBASE_CONFIG = {
   apiKey: "AIzaSyB_JXt6qiP39tlVMcQDI4OeEj835kmMsXY",
-  authDomain: "://firebaseapp.com",
-  databaseURL: "https://firebaseio.com",
+  authDomain: "tart-manager.firebaseapp.com",
+  databaseURL: "https://tart-manager-default-rtdb.firebaseio.com",
   projectId: "tart-manager",
   storageBucket: "tart-manager.firebasestorage.app",
   messagingSenderId: "968257225904",
