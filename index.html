@@ -79,7 +79,21 @@ function cloudInit(){
       setCloudStatus("☁ クラウド同期中…");
       cloudRef.once("value").then(snap=>{
         const remote=snap.val();
-        if(remote){db=remote;localSave();cloudFirstSync=false;cloudReady=true;setCloudStatus("☁ 同期中："+user.email,"cloudok");render();}
+       if(remote){
+  db={
+    ...db,
+    ...remote,
+    events:Array.isArray(remote.events)?remote.events:db.events,
+    products:Array.isArray(remote.products)?remote.products:db.products,
+    staff:Array.isArray(remote.staff)?remote.staff:db.staff,
+    payments:Array.isArray(remote.payments)?remote.payments:db.payments
+  };
+
+  localSave();
+  cloudFirstSync=false;
+  cloudReady=true;
+  setCloudStatus("☁ 同期中："+user.email,"cloudok");
+  render();
         else{cloudReady=true;cloudFirstSync=false;localSave();cloudRef.set(db).then(()=>{setCloudStatus("☁ 同期中："+user.email,"cloudok");render()}).catch(err=>setCloudStatus("⚠ 初回保存エラー："+(err?.message||err),"clouderr"));}
         cloudRef.on("value",snap2=>{if(!cloudReady||cloudApplying)return;const v=snap2.val();if(v){cloudApplying=true;db=v;localSave();render();cloudApplying=false;setCloudStatus("☁ 同期中："+user.email,"cloudok")}});
       }).catch(err=>{setCloudStatus("⚠ クラウド接続エラー："+(err?.message||err),"clouderr");document.getElementById("app").innerHTML=cloudLoginView()});
