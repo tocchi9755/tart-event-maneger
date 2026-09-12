@@ -59,6 +59,24 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 const KEY="toge_tart_manager_final_v2";
 const base=[["plain","プレーン",400],["double","Wチーズ",400],["choco","チョコレート",400],["has","ハスカップ",400],["sea","シーベリー",400],["blue","ブルーベリー",400],["white","白いガトーショコラ",450]];
 let db=JSON.parse(localStorage.getItem(KEY)||"null")||{events:[],products:base.map(x=>({id:x[0],name:x[1],price:x[2]})),staff:["スタッフ1","スタッフ2"],payments:["現金","PayPay"],tab:"events"};
+function normalizeDb(){
+  if(!db || typeof db!=="object") db={};
+  db.events=Array.isArray(db.events)?db.events:[];
+  db.products=Array.isArray(db.products)&&db.products.length?db.products:base.map(x=>({id:x[0],name:x[1],price:x[2]}));
+  db.staff=Array.isArray(db.staff)?db.staff:["スタッフ1","スタッフ2"];
+  db.payments=Array.isArray(db.payments)&&db.payments.length?db.payments:["現金","PayPay"];
+  db.tab=db.tab||"events";
+  db.events.forEach(ev=>{
+    if(!ev || typeof ev!=="object") return;
+    ev.transactions=Array.isArray(ev.transactions)?ev.transactions:[];
+    ev.cart=Array.isArray(ev.cart)?ev.cart:[];
+    ev.stock=Array.isArray(ev.stock)?ev.stock:[];
+    ev.prices=ev.prices&&typeof ev.prices==="object"?ev.prices:{};
+    ev.closed=ev.closed&&typeof ev.closed==="object"?ev.closed:{};
+    ev.fees=ev.fees&&typeof ev.fees==="object"?ev.fees:{};
+  });
+}
+normalizeDb();
 let cloudUser=null, cloudReady=false, cloudRef=null, cloudApplying=false, cloudFirstSync=true;
 const localSave=()=>localStorage.setItem(KEY,JSON.stringify(db));
 const save=()=>{localSave();if(cloudReady&&cloudRef&&!cloudApplying){clearTimeout(window.__cloudSaveTimer);window.__cloudSaveTimer=setTimeout(()=>cloudRef.set(db).catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr")),120)}};
@@ -88,6 +106,7 @@ function cloudInit(){
     staff:Array.isArray(remote.staff)?remote.staff:db.staff,
     payments:Array.isArray(remote.payments)?remote.payments:db.payments
   };
+  normalizeDb();
 
   localSave();
   cloudFirstSync=false;
@@ -95,7 +114,7 @@ function cloudInit(){
   setCloudStatus("☁ 同期中："+user.email,"cloudok");
   render();
     }else{cloudReady=true;cloudFirstSync=false;localSave();cloudRef.set(db).then(()=>{setCloudStatus("☁ 同期中："+user.email,"cloudok");render()}).catch(err=>setCloudStatus("⚠ 初回保存エラー："+(err?.message||err),"clouderr"));}
-        cloudRef.on("value",snap2=>{if(!cloudReady||cloudApplying)return;const v=snap2.val();if(v){cloudApplying=true;db=v;localSave();render();cloudApplying=false;setCloudStatus("☁ 同期中："+user.email,"cloudok")}});
+        cloudRef.on("value",snap2=>{if(!cloudReady||cloudApplying)return;const v=snap2.val();if(v){cloudApplying=true;db=v;normalizeDb();localSave();render();cloudApplying=false;setCloudStatus("☁ 同期中："+user.email,"cloudok")}});
       }).catch(err=>{setCloudStatus("⚠ クラウド接続エラー："+(err?.message||err),"clouderr");document.getElementById("app").innerHTML=cloudLoginView()});
     });
   }catch(err){setCloudStatus("⚠ Firebase初期化エラー："+(err?.message||err),"clouderr");document.getElementById("app").innerHTML=cloudSetupView()}
