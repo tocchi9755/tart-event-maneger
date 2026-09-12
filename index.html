@@ -46,6 +46,14 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 .editrow{display:grid;grid-template-columns:1fr 70px 85px;gap:6px;align-items:center;margin:6px 0}
 .editrow input{width:100%}
 @media(max-width:520px){.editrow{grid-template-columns:1fr 64px 78px}.txactions{flex-wrap:wrap}}
+
+.analysis-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.analysis-box{background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:11px}
+.analysis-box .label{font-size:12px;color:#6b7280}.analysis-box .value{font-size:21px;font-weight:800;margin-top:3px}
+.ranklist{display:flex;flex-direction:column;gap:6px}.rankrow{display:grid;grid-template-columns:28px 1fr auto;gap:7px;align-items:center;padding:8px;border-bottom:1px solid #eee}
+.compare-good{font-weight:800}.compare-bad{font-weight:800}.smalltable{font-size:12px}
+@media(max-width:520px){.analysis-grid{grid-template-columns:1fr 1fr}}
+
 </style>
 </head>
 <body>
@@ -57,7 +65,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 <script src="./firebase-config.js"></script>
 <script>
 /*
-  タルト販売管理 v3
+  タルト販売管理 v5
   - Firebaseの既存保存先・既存KEYを維持
   - iPhone/PC/Androidの同期方式を変更しない
   - 在庫の物理フローを明確化
@@ -416,11 +424,25 @@ function render(){
   document.getElementById("app").innerHTML=f(x)||"";
 }
 function events(){
-  return `<div class="card"><h2>イベント一覧</h2>${
-    db.events.length?db.events.map(x=>`<div class="card" style="margin:7px 0"><div class="between">
-    <div><b>${esc(x.name)}</b><div class="muted">${x.start} ～ ${x.end}</div></div>
-    <button class="primary" onclick="location.hash='${x.id}';db.tab='sale';render()">開く</button></div></div>`).join("")
-    :`<p class="muted">まだイベントがありません。</p>`}</div>
+  const cards=(db.events||[]).map(x=>{
+    const total=sales(x), fee=x.feeMode==="daily"?Object.values(x.fees||{}).reduce((a,b)=>a+Number(b||0),0):Number(x.feeTotal||0);
+    const allq=transactions(x).reduce((a,t)=>a+(t.items||[]).reduce((b,i)=>b+num(i.qty),0),0);
+    const ended=x.end < jpToday();
+    return `<div class="card" style="margin:7px 0">
+      <div class="between">
+        <div><b>${esc(x.name)}</b><div class="muted">${x.start} ～ ${x.end} ${ended?"・終了":"・開催前/開催中"}</div></div>
+        <button class="primary" onclick="location.hash='${x.id}';db.tab='sale';render()">開く</button>
+      </div>
+      <div class="analysis-grid" style="margin-top:9px">
+        <div class="analysis-box"><div class="label">売上</div><div class="value">${yen(total)}</div></div>
+        <div class="analysis-box"><div class="label">販売数</div><div class="value">${allq}個</div></div>
+        <div class="analysis-box"><div class="label">利益</div><div class="value">${yen(total-fee)}</div></div>
+        <div class="analysis-box"><div class="label">1組平均</div><div class="value">${transactions(x).length?yen(total/transactions(x).length):"¥0"}</div></div>
+      </div>
+      <button class="soft" style="width:100%;margin-top:8px" onclick="location.hash='${x.id}';db.tab='summary';render()">📊 振り返り・分析を見る</button>
+    </div>`;
+  }).join("");
+  return `<div class="card"><h2>イベント一覧</h2>${cards||`<p class="muted">まだイベントがありません。</p>`}</div>
     <div class="card"><button class="primary" onclick="newEvent()">＋新しいイベントを作る</button></div>`;
 }
 function daySelect(x){
@@ -458,7 +480,7 @@ function cartHTML(x){
   <b>${yen(i.qty*i.price)}</b></div>`).join("")}</div>
   <div class="between" style="margin-top:10px"><b>合計</b><b class="big">${yen(total)}</b></div>
   <div class="paygrid" style="margin-top:10px">${db.payments.map(p=>`<button class="${p==='現金'?'good':'primary'}" onclick="checkout('${esc(p)}',this)">${esc(p)}で確定</button>`).join("")}</div>
-  <button class="bad" style="width:100%;margin-top:8px" onclick="x.cart=[];save();render()">カート取消</button></div>`;
+  <button class="bad" style="width:100%;margin-top:8px" onclick="cancelCart()">🗑 カートを全部取り消す</button></div>`;
 }
 function historyHTML(x,d){
   const arr=allTransactions(x,d).sort((a,b)=>a.id-b.id);
@@ -536,6 +558,17 @@ function chg(pid,n){
   i.qty+=n;if(i.qty<1)x.cart=x.cart.filter(q=>q!==i);
   save();render();
 }
+
+function cancelCart(){
+  const x=e();
+  if(!x || !x.cart?.length)return;
+  const count=x.cart.reduce((s,i)=>s+num(i.qty),0);
+  if(!confirm(`現在カートに入っている${count}個をすべて取り消しますか？\n※まだ会計確定前なので、売上・在庫には影響しません。`))return;
+  pushUndo(x,"カートを全部取り消し");
+  x.cart=[];
+  save();render();toast("カートをすべて取り消しました");
+}
+
 function createTransaction(x,d,items,pay){
   const now=new Date();
   const t={id:Date.now()+Math.floor(Math.random()*1000),groupNo:nextGroupNo(x),timestamp:now.toISOString(),day:d,
@@ -663,14 +696,99 @@ function closeDay(d){
   const x=e();if(!confirm(`${d}を締めます。締め後も会計データは残ります。よろしいですか？`))return;
   x.closed=x.closed||{};x.closed[d]=new Date().toISOString();save();render();
 }
+
+function eventMetrics(x){
+  const tx=transactions(x), total=sales(x);
+  const fee=x.feeMode==="daily"?Object.values(x.fees||{}).reduce((a,b)=>a+Number(b||0),0):Number(x.feeTotal||0);
+  const groups=tx.length;
+  const allq=tx.reduce((a,t)=>a+(t.items||[]).reduce((b,i)=>b+num(i.qty),0),0);
+  const pay=payTotalsAll(x);
+  const prod=db.products.map(p=>{
+    const q=qty(x,p.id);
+    const v=tx.reduce((s,t)=>s+(t.items||[]).filter(i=>i.productId===p.id).reduce((a,i)=>a+num(i.qty)*Number(i.price||0),0),0);
+    return {id:p.id,name:p.name,qty:q,sales:v};
+  }).sort((a,b)=>b.qty-a.qty);
+  const days=dayList(x).map(d=>({day:d,sales:sales(x,d),qty:tx.filter(t=>t.day===d).reduce((a,t)=>a+(t.items||[]).reduce((b,i)=>b+num(i.qty),0),0),groups:transactions(x,d).length}));
+  const slotData={};
+  dayList(x).forEach(d=>{
+    const [a,b]=x.open.split(":").map(Number),[c,f]=x.close.split(":").map(Number);
+    const start=a*60+b,end=c*60+f,step=(x.slot||1)*60;
+    for(let m=start;m<end;m+=step){
+      const key=fmt(m)+" ～ "+fmt(Math.min(m+step,end));
+      if(!slotData[key])slotData[key]={qty:0,sales:0,groups:0};
+      const arr=transactions(x,d).filter(t=>{
+        const q=new Date(t.timestamp),v=q.getHours()*60+q.getMinutes();
+        return v>=m&&v<Math.min(m+step,end);
+      });
+      slotData[key].qty+=arr.reduce((a,t)=>a+(t.items||[]).reduce((b,i)=>b+num(i.qty),0),0);
+      slotData[key].sales+=arr.reduce((a,t)=>a+Number(t.total||0),0);
+      slotData[key].groups+=arr.length;
+    }
+  });
+  return {total,fee,profit:total-fee,groups,allq,avg:groups?total/groups:0,pay,prod,days,slotData};
+}
+function payTotalsAll(x){
+  const m={};db.payments.forEach(p=>m[p]=0);
+  transactions(x).forEach(t=>m[t.payment]=(m[t.payment]||0)+Number(t.total||0));
+  return m;
+}
+function endingInventory(x){
+  const m=stockMap(x);
+  return db.products.map(p=>({name:p.name,show:m[p.id]?.show||0,store:m[p.id]?.store||0,total:m[p.id]?.remaining||0,sold:m[p.id]?.sold||0,in:m[p.id]?.totalIn||0}));
+}
+function findPreviousEvent(x){
+  const arr=(db.events||[]).filter(q=>q.id!==x.id && q.end<=x.start).sort((a,b)=>String(b.end).localeCompare(String(a.end)));
+  return arr[0]||null;
+}
+function signedDiff(a,b){
+  const d=Number(a||0)-Number(b||0);
+  return d>0?`+${d}`:`${d}`;
+}
 function summary(x){
-  const fee=x.feeMode==="daily"?Object.values(x.fees||{}).reduce((a,b)=>a+b,0):Number(x.feeTotal||0),
-  total=sales(x),allq=transactions(x).reduce((a,t)=>a+t.items.reduce((b,i)=>b+i.qty,0),0);
-  return `<div class="card"><h2>イベント全体集計</h2><div class="grid"><div><div class="muted">総販売数</div><div class="big">${allq}個</div></div>
-  <div><div class="muted">総売上</div><div class="big">${yen(total)}</div></div></div><p>手数料・経費：<b>${yen(fee)}</b>　利益：<b>${yen(total-fee)}</b></p>
-  <h3>日別</h3><table><tr><th>日付</th><th>売上</th><th>締め</th></tr>${dayList(x).map(d=>`<tr><td>${d}</td><td>${yen(sales(x,d))}</td><td>${x.closed?.[d]?"済":"未"}</td></tr>`).join("")}</table>
-  <h3>商品別</h3><table><tr><th>商品</th><th>数量</th><th>売上</th></tr>${db.products.map(p=>`<tr><td>${esc(p.name)}</td><td>${qty(x,p.id)}</td><td>${yen(transactions(x).reduce((s,t)=>s+t.items.filter(i=>i.productId===p.id).reduce((a,i)=>a+i.qty*i.price,0),0))}</td></tr>`).join("")}</table>
-  <button class="soft" onclick="printSummary()">🖨 イベント集計を印刷</button></div>`;
+  if(!x)return "";
+  const m=eventMetrics(x), inv=endingInventory(x), prev=findPreviousEvent(x), pm=m.pay;
+  const topProducts=m.prod.filter(p=>p.qty>0).slice(0,10);
+  const dailyRows=m.days.map(d=>`<tr><td>${d.day}</td><td>${d.qty}個</td><td>${yen(d.sales)}</td><td>${d.groups}組</td></tr>`).join("");
+  const payRows=Object.entries(pm).sort((a,b)=>b[1]-a[1]).map(([p,v])=>`<tr><td>${esc(p)}</td><td>${yen(v)}</td><td>${m.total?Math.round(v/m.total*100):0}%</td></tr>`).join("");
+  const prodRows=topProducts.map((p,i)=>`<div class="rankrow"><b>${i+1}</b><span>${esc(p.name)}</span><b>${p.qty}個 / ${yen(p.sales)}</b></div>`).join("") || `<p class="muted">販売実績がありません。</p>`;
+  const slotRows=Object.entries(m.slotData).sort((a,b)=>b[1].sales-a[1].sales).map(([k,v])=>`<tr><td>${k}</td><td>${v.qty}個</td><td>${yen(v.sales)}</td><td>${v.groups}組</td></tr>`).join("");
+  const invRows=inv.map(v=>`<tr><td>${esc(v.name)}</td><td>${v.in}個</td><td>${v.sold}個</td><td>${v.show}個</td><td>${v.store}個</td><td>${v.total}個</td></tr>`).join("");
+  let compare="";
+  if(prev){
+    const p=eventMetrics(prev);
+    const topNow=m.prod.reduce((best,v)=>v.qty>(best?.qty||-1)?v:best,null);
+    const topPrev=p.prod.reduce((best,v)=>v.qty>(best?.qty||-1)?v:best,null);
+    compare=`<div class="card"><div class="between"><h3>前回イベントとの比較</h3><span class="pill">${esc(prev.name)}</span></div>
+      <div class="analysis-grid">
+        <div class="analysis-box"><div class="label">売上差</div><div class="value">${yen(m.total-p.total)}</div><div class="muted">今回 ${yen(m.total)} / 前回 ${yen(p.total)}</div></div>
+        <div class="analysis-box"><div class="label">販売数差</div><div class="value">${signedDiff(m.allq,p.allq)}個</div><div class="muted">今回 ${m.allq} / 前回 ${p.allq}</div></div>
+        <div class="analysis-box"><div class="label">1組平均差</div><div class="value">${yen(m.avg-p.avg)}</div><div class="muted">今回 ${yen(m.avg)} / 前回 ${yen(p.avg)}</div></div>
+        <div class="analysis-box"><div class="label">利益差</div><div class="value">${yen(m.profit-p.profit)}</div><div class="muted">今回 ${yen(m.profit)} / 前回 ${yen(p.profit)}</div></div>
+      </div>
+      <p style="margin-bottom:0"><b>人気No.1：</b>${topNow?esc(topNow.name)+" "+topNow.qty+"個":"なし"} ／ 前回：${topPrev?esc(topPrev.name)+" "+topPrev.qty+"個":"なし"}</p>
+    </div>`;
+  }else{
+    compare=`<div class="card"><h3>前回イベントとの比較</h3><p class="muted">比較できる終了済みの前イベントがまだありません。次のイベントが終わると、今回との比較ができます。</p></div>`;
+  }
+  return `<div class="card"><div class="between"><h2>イベント振り返り・分析</h2><span class="pill">${x.end<jpToday()?"終了イベント":"開催中/予定"}</span></div>
+    <p class="muted">${esc(x.name)}　${x.start} ～ ${x.end}</p>
+    <div class="analysis-grid">
+      <div class="analysis-box"><div class="label">総売上</div><div class="value">${yen(m.total)}</div></div>
+      <div class="analysis-box"><div class="label">総販売数</div><div class="value">${m.allq}個</div></div>
+      <div class="analysis-box"><div class="label">利益</div><div class="value">${yen(m.profit)}</div></div>
+      <div class="analysis-box"><div class="label">1組平均購入額</div><div class="value">${yen(m.avg)}</div></div>
+      <div class="analysis-box"><div class="label">販売組数</div><div class="value">${m.groups}組</div></div>
+      <div class="analysis-box"><div class="label">経費・手数料</div><div class="value">${yen(m.fee)}</div></div>
+    </div>
+  </div>
+  ${compare}
+  <div class="card"><h3>🏆 商品販売ランキング</h3><div class="ranklist">${prodRows}</div></div>
+  <div class="card"><h3>📅 日別売上</h3><table><tr><th>日付</th><th>数量</th><th>売上</th><th>組数</th></tr>${dailyRows}</table></div>
+  <div class="card"><h3>⏰ 時間帯別</h3><table><tr><th>時間帯</th><th>数量</th><th>売上</th><th>組数</th></tr>${slotRows}</table></div>
+  <div class="card"><h3>💳 支払方法別</h3><table><tr><th>支払方法</th><th>売上</th><th>割合</th></tr>${payRows}</table></div>
+  <div class="card"><h3>📦 イベント終了時の在庫</h3><p class="muted">販売数・残在庫を見て、次回イベントの搬入量を考えるための記録です。</p><div class="stocktable"><table class="smalltable"><tr><th>商品</th><th>総搬入</th><th>販売</th><th>ショーケース</th><th>ストッカー</th><th>残在庫</th></tr>${invRows}</table></div></div>
+  <div class="card"><h3>🗑 余り・廃棄の記録</h3><p class="muted">現在の在庫画面でイベント終了時の残数を確認できます。廃棄数を別管理したい場合は、次の版で「廃棄数」を入力して販売数・残在庫と分けて記録することもできます。</p></div>
+  <div class="card"><h3>イベント全体集計</h3><button class="soft" onclick="printSummary()">🖨 イベント集計を印刷</button></div>`;
 }
 function settings(x){
   return `<div class="card"><h2>${x?"イベント設定":"新規イベント設定"}</h2><div class="grid">
@@ -757,23 +875,3 @@ function printSummary(){
 if("serviceWorker"in navigator)navigator.serviceWorker.register("./sw.js").catch(()=>{});
 cloudInit();
 </script></script></body></html>
-
-
-
-
-  
- 
-  
-
-
- 
-
-
-
-
-
- 
-
-  
- 
-
