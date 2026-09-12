@@ -97,6 +97,7 @@ function normalizeDb(){
     ev.cart=Array.isArray(ev.cart)?ev.cart:[];
     ev.stock=Array.isArray(ev.stock)?ev.stock:[];
     ev.stockMoves=Array.isArray(ev.stockMoves)?ev.stockMoves:[];
+    ev.undoStack=Array.isArray(ev.undoStack)?ev.undoStack:[];
     ev.prices=ev.prices&&typeof ev.prices==="object"?ev.prices:{};
     ev.closed=ev.closed&&typeof ev.closed==="object"?ev.closed:{};
     ev.fees=ev.fees&&typeof ev.fees==="object"?ev.fees:{};
@@ -343,6 +344,33 @@ function returnToShowcase(x,items){
   for(const i of items)ensureStock(x,i.productId).show+=num(i.qty);
 }
 
+/* 操作を1手順戻せるよう、イベント単位で直前状態を最大20件保存。
+   Firebaseへ一緒に保存するため、PCとiPhoneの間でもUndo状態を共有する。 */
+function pushUndo(x,label){
+  x.undoStack=Array.isArray(x.undoStack)?x.undoStack:[];
+  const snap={label,timestamp:new Date().toISOString(),stock:JSON.parse(JSON.stringify(x.stock||[])),stockMoves:JSON.parse(JSON.stringify(x.stockMoves||[])),transactions:JSON.parse(JSON.stringify(x.transactions||[])),cart:JSON.parse(JSON.stringify(x.cart||[])),fees:JSON.parse(JSON.stringify(x.fees||{})),closed:JSON.parse(JSON.stringify(x.closed||{}))};
+  x.undoStack.push(snap);
+  if(x.undoStack.length>20)x.undoStack.shift();
+}
+function undoLastStep(){
+  const x=e(); if(!x)return;
+  x.undoStack=Array.isArray(x.undoStack)?x.undoStack:[];
+  const u=x.undoStack.pop();
+  if(!u)return alert("戻せる操作がありません。");
+  x.stock=JSON.parse(JSON.stringify(u.stock||[]));
+  x.stockMoves=JSON.parse(JSON.stringify(u.stockMoves||[]));
+  x.transactions=JSON.parse(JSON.stringify(u.transactions||[]));
+  x.cart=JSON.parse(JSON.stringify(u.cart||[]));
+  x.fees=JSON.parse(JSON.stringify(u.fees||{}));
+  x.closed=JSON.parse(JSON.stringify(u.closed||{}));
+  x.editTxId=null;
+  save(); render(); toast("1手順前に戻しました："+(u.label||"直前の操作"));
+}
+function undoButton(){
+  const x=e(),n=x?.undoStack?.length||0;
+  return `<button class="warn" ${n?'':'disabled'} onclick="undoLastStep()">↩ 1手順前に戻す${n?`（残り${n}）`:''}</button>`;
+}
+
 /* 明示的なストッカー→ショーケース移動 */
 function transferToShow(pid){
   const x=e(); if(!x)return;
@@ -354,10 +382,26 @@ function transferToShow(pid){
   const n=num(v);
   if(n<1)return;
   if(n>max)return alert(`ストッカーには${max}個しかありません。`);
+  pushUndo(x,`${p?.name||"商品"}をストッカーからショーケースへ${n}個移動`);
   s.store-=n;s.show+=n;
   x.stockMoves=x.stockMoves||[];
   x.stockMoves.push({id:Date.now()+Math.random(),productId:pid,qty:n,type:"store_to_show",timestamp:new Date().toISOString()});
   save();render();toast(`${p?.name||"商品"} ${n}個をショーケースへ移動しました`);
+}
+function transferToStock(pid){
+  const x=e(); if(!x)return;
+  const s=ensureStock(x,pid),p=db.products.find(q=>q.id===pid);
+  const max=s.show;
+  if(max<1)return alert(`${p?.name||"商品"}のショーケース在庫がありません。`);
+  const v=prompt(`${p?.name||"商品"}をショーケースからストッカーへ何個戻しますか？\n現在のショーケース：${max}個`,String(Math.min(10,max)));
+  if(v===null)return;
+  const n=num(v); if(n<1)return;
+  if(n>max)return alert(`ショーケースには${max}個しかありません。`);
+  pushUndo(x,`${p?.name||"商品"}をショーケースからストッカーへ${n}個移動`);
+  s.show-=n;s.store+=n;
+  x.stockMoves=x.stockMoves||[];
+  x.stockMoves.push({id:Date.now()+Math.random(),productId:pid,qty:n,type:"show_to_store",timestamp:new Date().toISOString()});
+  save();render();toast(`${p?.name||"商品"} ${n}個をストッカーへ戻しました`);
 }
 
 function renderNav(){
@@ -388,7 +432,7 @@ function sale(x){
   if(!x)return events();
   const d=selectedDay(x),sm=stockMap(x),closed=!!x.closed?.[d];
   return `${x.editTxId?txEditor(x,x.editTxId):""}
-  <div class="card"><div class="grid"><div>${daySelect(x)}</div><div style="text-align:right">
+  <div class="card"><div class="row" style="justify-content:flex-end;margin-bottom:8px">${undoButton()}</div><div class="grid"><div>${daySelect(x)}</div><div style="text-align:right">
   <div class="muted">本日の売上</div><div class="big">${yen(sales(x,d))}</div><div class="muted">${transactions(x,d).length}組</div></div></div></div>
   <div class="card"><div class="between"><h3 style="margin:0">かんたん会計</h3><span class="pill">${x.slot||1}時間ごと集計</span></div>
   <p class="muted">販売はショーケース在庫から減ります。</p>
@@ -466,6 +510,7 @@ function saveTx(id){
     const diff=(newBy[p.id]||0)-(oldBy[p.id]||0);
     if(diff>0 && (m[p.id]?.show||0)<diff)return alert(`${p.name}のショーケース在庫が不足しています。`);
   }
+  pushUndo(x,`${Number(t.groupNo)||'?'}組目の会計を編集`);
   for(const p of db.products){
     const diff=(newBy[p.id]||0)-(oldBy[p.id]||0);
     if(diff>0)ensureStock(x,p.id).show-=diff;
@@ -505,6 +550,8 @@ function quickSale(pid,pay,btn){
   const items=[{productId:pid,name:p.name,price,qty:1}];
   const r=consumeForSale(x,items);
   if(!r.ok)return alert(`${r.name}のショーケース在庫が不足しています。\n現在：${r.available}個`);
+  // 在庫・会計を変更する直前にUndo用スナップショット
+  pushUndo(x,`${p.name}を${pay}で販売`);
   createTransaction(x,d,items,pay);save();flash(btn,`${p.name}を${pay}で会計しました`);render();
 }
 function undoLastSale(){
@@ -516,6 +563,7 @@ function voidTx(id){
   const x=e(),t=x.transactions.find(q=>String(q.id)===String(id));if(!t||t.status==="void")return;
   if(x.closed?.[t.day])return alert("締め済みの日は変更できません。");
   if(!confirm(`${Number(t.groupNo)||'?'}組目の会計 ${yen(t.total)} を取り消しますか？\n販売した商品はショーケース在庫へ戻ります。`))return;
+  pushUndo(x,`${Number(t.groupNo)||'?'}組目の会計を取消`);
   returnToShowcase(x,t.items||[]);
   t.status="void";t.voidedAt=new Date().toISOString();save();render();toast("会計を取り消しました");
 }
@@ -525,6 +573,7 @@ function checkout(pay,btn){
   if(!x.cart.length)return;
   const r=consumeForSale(x,x.cart);
   if(!r.ok)return alert(`${r.name}のショーケース在庫が不足しています。\n現在：${r.available}個`);
+  pushUndo(x,`まとめ会計を${pay}で確定`);
   createTransaction(x,d,x.cart,pay);x.cart=[];save();flash(btn,`${pay}で会計を確定しました`);render();
 }
 function slots(x,d){
@@ -557,15 +606,16 @@ function inventory(x){
       <div><label>ストッカー</label><input type="number" value="${q.store}" readonly></div>
     </div>
     <div class="between" style="margin-top:8px"><span class="muted">販売済み：${q.sold}個 ／ 総搬入：${q.totalIn}個</span>
-    <button class="primary" onclick="transferToShow('${p.id}')">ストッカー → ショーケース</button></div>
+    <div class="row"><button class="primary" onclick="transferToShow('${p.id}')">ストッカー → ショーケース</button><button class="soft" onclick="transferToStock('${p.id}')">ショーケース → ストッカー</button></div></div>
   </div>`}).join("")}
-  <div class="card"><button class="primary" style="width:100%;padding:14px" onclick="saveAllStock()">💾 搬入数をすべて保存</button>
+  <div class="card"><div class="row" style="margin-bottom:8px">${undoButton()}<button class="soft" onclick="location.reload()">表示を更新</button></div><button class="primary" style="width:100%;padding:14px" onclick="saveAllStock()">💾 搬入数をすべて保存</button>
   <p class="muted" style="margin:7px 0 0">初回搬入の増減はショーケース、追加搬入の増減はストッカーへ反映します。販売数・移動数は自動管理されます。</p></div>`;
 }
 function saveAllStock(){
   const x=e();if(!x)return;
   x.stock=x.stock||[];x.stockMoves=x.stockMoves||[];
   const m=stockMap(x),newStock=[];
+  pushUndo(x,"搬入数を変更");
   for(const p of db.products){
     const old=m[p.id]||{in:0,add:0,show:0,store:0};
     const ni=num(document.getElementById("in_"+p.id)?.value);
@@ -648,7 +698,7 @@ function settings(x){
 }
 function newEvent(){
   db.events.unshift({id:"e"+Date.now(),name:"新しいイベント",start:jpToday(),end:jpToday(),open:"10:00",close:"17:00",slot:1,
-    feeMode:"daily",feeTotal:0,fees:{},stock:[],stockMoves:[],transactions:[],prices:Object.fromEntries(db.products.map(p=>[p.id,p.price])),closed:{},cart:[]});
+    feeMode:"daily",feeTotal:0,fees:{},stock:[],stockMoves:[],undoStack:[],transactions:[],prices:Object.fromEntries(db.products.map(p=>[p.id,p.price])),closed:{},cart:[]});
   location.hash=db.events[0].id;db.tab="settings";save();render();
 }
 function saveEvent(){
@@ -707,3 +757,23 @@ function printSummary(){
 if("serviceWorker"in navigator)navigator.serviceWorker.register("./sw.js").catch(()=>{});
 cloudInit();
 </script></script></body></html>
+
+
+
+
+  
+ 
+  
+
+
+ 
+
+
+
+
+
+ 
+
+  
+ 
+
