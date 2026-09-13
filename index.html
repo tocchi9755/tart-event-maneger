@@ -65,7 +65,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 <script src="./firebase-config.js"></script>
 <script>
 /*
-  タルト販売管理 v5
+  タルト販売管理 v8
   - Firebaseの既存保存先・既存KEYを維持
   - iPhone/PC/Androidの同期方式を変更しない
   - 在庫の物理フローを明確化
@@ -109,6 +109,10 @@ function normalizeDb(){
     ev.prices=ev.prices&&typeof ev.prices==="object"?ev.prices:{};
     ev.closed=ev.closed&&typeof ev.closed==="object"?ev.closed:{};
     ev.fees=ev.fees&&typeof ev.fees==="object"?ev.fees:{};
+    ev.staffByDay=ev.staffByDay&&typeof ev.staffByDay==="object"?ev.staffByDay:{};
+    ev.dayNotes=ev.dayNotes&&typeof ev.dayNotes==="object"?ev.dayNotes:{};
+    ev.eventClosed=!!ev.eventClosed;
+    ev.closedAt=ev.closedAt||null;
   });
 }
 normalizeDb();
@@ -356,7 +360,7 @@ function returnToShowcase(x,items){
    Firebaseへ一緒に保存するため、PCとiPhoneの間でもUndo状態を共有する。 */
 function pushUndo(x,label){
   x.undoStack=Array.isArray(x.undoStack)?x.undoStack:[];
-  const snap={label,timestamp:new Date().toISOString(),stock:JSON.parse(JSON.stringify(x.stock||[])),stockMoves:JSON.parse(JSON.stringify(x.stockMoves||[])),transactions:JSON.parse(JSON.stringify(x.transactions||[])),cart:JSON.parse(JSON.stringify(x.cart||[])),fees:JSON.parse(JSON.stringify(x.fees||{})),closed:JSON.parse(JSON.stringify(x.closed||{}))};
+  const snap={label,timestamp:new Date().toISOString(),stock:JSON.parse(JSON.stringify(x.stock||[])),stockMoves:JSON.parse(JSON.stringify(x.stockMoves||[])),transactions:JSON.parse(JSON.stringify(x.transactions||[])),cart:JSON.parse(JSON.stringify(x.cart||[])),fees:JSON.parse(JSON.stringify(x.fees||{})),closed:JSON.parse(JSON.stringify(x.closed||{})),staffByDay:JSON.parse(JSON.stringify(x.staffByDay||{})),dayNotes:JSON.parse(JSON.stringify(x.dayNotes||{})),eventClosed:!!x.eventClosed,closedAt:x.closedAt||null};
   x.undoStack.push(snap);
   if(x.undoStack.length>20)x.undoStack.shift();
 }
@@ -371,6 +375,10 @@ function undoLastStep(){
   x.cart=JSON.parse(JSON.stringify(u.cart||[]));
   x.fees=JSON.parse(JSON.stringify(u.fees||{}));
   x.closed=JSON.parse(JSON.stringify(u.closed||{}));
+  x.staffByDay=JSON.parse(JSON.stringify(u.staffByDay||{}));
+  x.dayNotes=JSON.parse(JSON.stringify(u.dayNotes||{}));
+  x.eventClosed=!!u.eventClosed;
+  x.closedAt=u.closedAt||null;
   x.editTxId=null;
   save(); render(); toast("1手順前に戻しました："+(u.label||"直前の操作"));
 }
@@ -382,6 +390,7 @@ function undoButton(){
 /* 明示的なストッカー→ショーケース移動 */
 function transferToShow(pid){
   const x=e(); if(!x)return;
+  if(x.eventClosed)return alert("締め済みイベントは在庫を変更できません。");
   const s=ensureStock(x,pid),p=db.products.find(q=>q.id===pid);
   const max=s.store;
   if(max<1)return alert(`${p?.name||"商品"}のストッカー在庫がありません。`);
@@ -398,6 +407,7 @@ function transferToShow(pid){
 }
 function transferToStock(pid){
   const x=e(); if(!x)return;
+  if(x.eventClosed)return alert("締め済みイベントは在庫を変更できません。");
   const s=ensureStock(x,pid),p=db.products.find(q=>q.id===pid);
   const max=s.show;
   if(max<1)return alert(`${p?.name||"商品"}のショーケース在庫がありません。`);
@@ -414,7 +424,7 @@ function transferToStock(pid){
 
 function renderNav(){
   const x=e();
-  document.getElementById("head").textContent=x?`${x.name}　${x.start} ～ ${x.end}`:"イベントを登録してください";
+  document.getElementById("head").textContent=x?`${x.name}　${x.start} ～ ${x.end}${x.eventClosed?"　【イベント締め済み】":""}`:"イベントを登録してください";
   const arr=x?[["sale","販売"],["inventory","在庫"],["daily","日報・締め"],["summary","イベント集計"],["settings","設定"]]:[["events","イベント"],["settings","商品・設定"]];
   document.getElementById("nav").innerHTML=arr.map(a=>`<button class="${db.tab===a[0]?'on':''}" onclick="db.tab='${a[0]}';save();render()">${a[1]}</button>`).join("");
 }
@@ -428,9 +438,10 @@ function events(){
     const total=sales(x), fee=x.feeMode==="daily"?Object.values(x.fees||{}).reduce((a,b)=>a+Number(b||0),0):Number(x.feeTotal||0);
     const allq=transactions(x).reduce((a,t)=>a+(t.items||[]).reduce((b,i)=>b+num(i.qty),0),0);
     const ended=x.end < jpToday();
+    const status=x.eventClosed?"・締め済み":(ended?"・終了":"・開催前/開催中");
     return `<div class="card" style="margin:7px 0">
       <div class="between">
-        <div><b>${esc(x.name)}</b><div class="muted">${x.start} ～ ${x.end} ${ended?"・終了":"・開催前/開催中"}</div></div>
+        <div><b>${esc(x.name)}</b><div class="muted">${x.start} ～ ${x.end} ${status}</div></div>
         <button class="primary" onclick="location.hash='${x.id}';db.tab='sale';render()">開く</button>
       </div>
       <div class="analysis-grid" style="margin-top:9px">
@@ -447,21 +458,32 @@ function events(){
 }
 function daySelect(x){
   const d=selectedDay(x);
-  return `<label>販売日</label><select onchange="x.selectedDay=this.value;save();render()">
+  return `<label>販売日</label><select onchange="switchSalesDay(this.value)">
   ${dayList(x).map(z=>`<option ${z===d?'selected':''}>${z}</option>`).join("")}</select>`;
+}
+
+/* 日付を切り替えたときは、締め済みの日の在庫をそのまま次の日へ引き継ぐ。
+   実在庫はイベント全体で1つなので、未販売のストッカー在庫も翌日の販売開始時に
+   ショーケースへ自動で繰り越し、日をまたいでも会計ボタンが使える状態にする。 */
+function switchSalesDay(d){
+  const x=e();if(!x)return;
+  const old=selectedDay(x);
+  if(old===d){x.selectedDay=d;save();render();return;}
+  x.selectedDay=d;
+  save();render();
 }
 function sale(x){
   if(!x)return events();
-  const d=selectedDay(x),sm=stockMap(x),closed=!!x.closed?.[d];
+  const d=selectedDay(x),sm=stockMap(x),closed=!!x.closed?.[d],eventClosed=!!x.eventClosed;
   return `${x.editTxId?txEditor(x,x.editTxId):""}
   <div class="card"><div class="row" style="justify-content:flex-end;margin-bottom:8px">${undoButton()}</div><div class="grid"><div>${daySelect(x)}</div><div style="text-align:right">
   <div class="muted">本日の売上</div><div class="big">${yen(sales(x,d))}</div><div class="muted">${transactions(x,d).length}組</div></div></div></div>
   <div class="card"><div class="between"><h3 style="margin:0">かんたん会計</h3><span class="pill">${x.slot||1}時間ごと集計</span></div>
-  <p class="muted">販売はショーケース在庫から減ります。</p>
+  ${eventClosed?`<div class="dangerbox">このイベントは締め済みです。会計は追加できません。</div>`:`<p class="muted">販売はショーケース在庫から減ります。</p>`}
   <div class="products">${db.products.map(p=>`<div class="prod"><b>${esc(p.name)}</b>
   <small>${yen(x.prices?.[p.id]??p.price)}　ショーケース ${sm[p.id].show}個　／　ストッカー ${sm[p.id].store}個</small>
-  <div class="quickpay"><button class="soft" ${closed||sm[p.id].show<1?'disabled':''} onclick="add('${p.id}',this)">カートに追加</button>
-  ${db.payments.map(pay=>`<button class="${pay==='現金'?'good':'primary'}" ${closed||sm[p.id].show<1?'disabled':''} onclick="quickSale('${p.id}','${esc(pay)}',this)">${esc(pay)} +1</button>`).join("")}
+  <div class="quickpay"><button class="soft" ${eventClosed||closed||sm[p.id].show<1?'disabled':''} onclick="add('${p.id}',this)">カートに追加</button>
+  ${db.payments.map(pay=>`<button class="${pay==='現金'?'good':'primary'}" ${eventClosed||closed||sm[p.id].show<1?'disabled':''} onclick="quickSale('${p.id}','${esc(pay)}',this)">${esc(pay)} +1</button>`).join("")}
   </div></div>`).join("")}</div></div>
   ${cartHTML(x)}
   <div class="card"><h3>会計履歴（${d}）</h3>${historyHTML(x,d)}</div>
@@ -479,7 +501,7 @@ function cartHTML(x){
   <span><button class="mini" onclick="chg('${i.productId}',-1)">−</button> ${i.qty} <button class="mini" onclick="chg('${i.productId}',1)">＋</button></span>
   <b>${yen(i.qty*i.price)}</b></div>`).join("")}</div>
   <div class="between" style="margin-top:10px"><b>合計</b><b class="big">${yen(total)}</b></div>
-  <div class="paygrid" style="margin-top:10px">${db.payments.map(p=>`<button class="${p==='現金'?'good':'primary'}" onclick="checkout('${esc(p)}',this)">${esc(p)}で確定</button>`).join("")}</div>
+  <div class="paygrid" style="margin-top:10px">${db.payments.map(p=>`<button class="${p==='現金'?'good':'primary'}" ${x.eventClosed?'disabled':''} onclick="checkout('${esc(p)}',this)">${esc(p)}で確定</button>`).join("")}</div>
   <button class="bad" style="width:100%;margin-top:8px" onclick="cancelCart()">🗑 カートを全部取り消す</button></div>`;
 }
 function historyHTML(x,d){
@@ -510,6 +532,7 @@ function txEditor(x,id){
 function openTx(id){let x=e();x.editTxId=id;save();render();setTimeout(()=>document.querySelector('.editor')?.scrollIntoView({behavior:'smooth',block:'center'}),50)}
 function saveTx(id){
   const x=e(),t=x.transactions.find(q=>String(q.id)===String(id));if(!t)return;
+  if(x.eventClosed)return alert("このイベントは締め済みです。");
   if(x.closed?.[t.day])return alert("締め済みの日は変更できません。");
   const oldItems=(t.items||[]).map(i=>({...i}));
   const items=[];
@@ -546,6 +569,8 @@ function saveTx(id){
 }
 function add(pid,btn){
   const x=e(),p=db.products.find(q=>q.id===pid);if(!p)return;
+  if(x.eventClosed)return alert("このイベントは締め済みです。");
+  if(x.closed?.[selectedDay(x)])return alert("この日は締め済みです。");
   const sm=stockMap(x),i=x.cart.find(q=>q.productId===pid);
   if((sm[pid]?.show||0)<=((i?.qty)||0))return alert("ショーケース在庫が不足しています。");
   const price=Number(x.prices?.[pid]??p.price);
@@ -554,6 +579,8 @@ function add(pid,btn){
 }
 function chg(pid,n){
   const x=e(),i=x.cart.find(q=>q.productId===pid);if(!i)return;
+  if(x.eventClosed)return alert("このイベントは締め済みです。");
+  if(x.closed?.[selectedDay(x)])return alert("この日は締め済みです。");
   if(n>0){const sm=stockMap(x);if((sm[pid]?.show||0)<=i.qty)return alert("ショーケース在庫が不足しています。");}
   i.qty+=n;if(i.qty<1)x.cart=x.cart.filter(q=>q!==i);
   save();render();
@@ -577,6 +604,7 @@ function createTransaction(x,d,items,pay){
 }
 function quickSale(pid,pay,btn){
   const x=e(),d=selectedDay(x);
+  if(x.eventClosed)return alert("このイベントは締め済みです。");
   if(x.closed?.[d])return alert("この日は締め済みです。");
   const p=db.products.find(q=>q.id===pid);if(!p)return;
   const price=Number(x.prices?.[pid]??p.price);
@@ -602,6 +630,7 @@ function voidTx(id){
 }
 function checkout(pay,btn){
   const x=e(),d=selectedDay(x);
+  if(x.eventClosed)return alert("このイベントは締め済みです。");
   if(x.closed?.[d])return alert("この日は締め済みです。");
   if(!x.cart.length)return;
   const r=consumeForSale(x,x.cart);
@@ -627,74 +656,127 @@ function fmt(m){return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60)
 function inventory(x){
   const m=stockMap(x);
   return `<div class="card"><h2>在庫管理</h2>
-  <p class="muted">初回搬入はショーケースへ、追加搬入はストッカーへ入ります。販売するとショーケースから減ります。ストッカー→ショーケースは「移動」ボタンで記録します。</p>
+  <p class="muted">初回搬入はショーケースへ、追加搬入はストッカーへ入ります。販売するとショーケースから減ります。ストッカー→ショーケースは「移動」ボタンで記録します。日を締めると残ったストッカー在庫は次の販売日に使えるようショーケースへ自動で繰り越します。</p>
   <div class="stocknote"><b>総在庫 ＝ ショーケース ＋ ストッカー</b><br>
   初回搬入 ＋ 追加搬入 − 販売数 ＝ 総在庫</div></div>
   ${db.products.map(p=>{const q=m[p.id];return `<div class="card stockcard">
     <div class="between"><h3>${esc(p.name)}</h3><span class="stocktotal">${q.remaining}個</span></div>
     <div class="grid">
-      <div><label>初回搬入（ショーケースへ）</label><input id="in_${p.id}" type="number" min="0" value="${q.in}"></div>
-      <div><label>追加搬入（ストッカーへ）</label><input id="add_${p.id}" type="number" min="0" value="${q.add}"></div>
+      <div><label>初回搬入（ショーケースへ）</label><input id="in_${p.id}" type="number" min="0" value="${q.in}" ${x.eventClosed?'disabled':''}></div>
+      <div><label>追加搬入（ストッカーへ）</label><input id="add_${p.id}" type="number" min="0" value="${q.add}" ${x.eventClosed?'disabled':''}></div>
       <div><label>ショーケース</label><input type="number" value="${q.show}" readonly></div>
       <div><label>ストッカー</label><input type="number" value="${q.store}" readonly></div>
     </div>
     <div class="between" style="margin-top:8px"><span class="muted">販売済み：${q.sold}個 ／ 総搬入：${q.totalIn}個</span>
-    <div class="row"><button class="primary" onclick="transferToShow('${p.id}')">ストッカー → ショーケース</button><button class="soft" onclick="transferToStock('${p.id}')">ショーケース → ストッカー</button></div></div>
+    <div class="row"><button class="primary" ${x.eventClosed?'disabled':''} onclick="transferToShow('${p.id}')">ストッカー → ショーケース</button><button class="soft" ${x.eventClosed?'disabled':''} onclick="transferToStock('${p.id}')">ショーケース → ストッカー</button></div></div>
   </div>`}).join("")}
-  <div class="card"><div class="row" style="margin-bottom:8px">${undoButton()}<button class="soft" onclick="location.reload()">表示を更新</button></div><button class="primary" style="width:100%;padding:14px" onclick="saveAllStock()">💾 搬入数をすべて保存</button>
+  <div class="card"><div class="row" style="margin-bottom:8px">${undoButton()}<button class="soft" onclick="location.reload()">表示を更新</button></div><button class="primary" style="width:100%;padding:14px" ${x.eventClosed?'disabled':''} onclick="saveAllStock()">💾 搬入数をすべて保存</button>
   <p class="muted" style="margin:7px 0 0">初回搬入の増減はショーケース、追加搬入の増減はストッカーへ反映します。販売数・移動数は自動管理されます。</p></div>`;
 }
 function saveAllStock(){
   const x=e();if(!x)return;
+  if(x.eventClosed)return alert("締め済みイベントは在庫を変更できません。");
   x.stock=x.stock||[];x.stockMoves=x.stockMoves||[];
-  const m=stockMap(x),newStock=[];
-  pushUndo(x,"搬入数を変更");
+  const m=stockMap(x),changes=[];
   for(const p of db.products){
     const old=m[p.id]||{in:0,add:0,show:0,store:0};
     const ni=num(document.getElementById("in_"+p.id)?.value);
     const na=num(document.getElementById("add_"+p.id)?.value);
     const di=ni-old.in,da=na-old.add;
-    let s=ensureStock(x,p.id);
-    if(di>0)s.show+=di;
-    if(di<0){
-      const reduce=-di;
-      if(s.show<reduce)return alert(`${p.name}の初回搬入数を減らせません。現在のショーケース在庫が不足します。`);
-      s.show-=reduce;
-    }
-    if(da>0)s.store+=da;
-    if(da<0){
-      const reduce=-da;
-      if(s.store<reduce)return alert(`${p.name}の追加搬入数を減らせません。現在のストッカー在庫が不足します。`);
-      s.store-=reduce;
-    }
-    s.in=ni;s.add=na;
-    newStock.push({productId:p.id,in:s.in,add:s.add,show:s.show,store:s.store});
+    if(di<0 && old.show<(-di))return alert(`${p.name}の初回搬入数を減らせません。現在のショーケース在庫が不足します。`);
+    if(da<0 && old.store<(-da))return alert(`${p.name}の追加搬入数を減らせません。現在のストッカー在庫が不足します。`);
+    changes.push({p,ni,na,di,da});
   }
-  x.stock=newStock;save();render();toast("全商品の搬入数を保存しました");
+  const changed=changes.some(c=>c.di!==0||c.da!==0);
+  if(!changed)return toast("搬入数に変更はありません");
+  pushUndo(x,"搬入数を変更");
+  for(const c of changes){
+    const s=ensureStock(x,c.p.id);
+    if(c.di>0)s.show+=c.di;
+    if(c.di<0)s.show+=c.di;
+    if(c.da>0)s.store+=c.da;
+    if(c.da<0)s.store+=c.da;
+    s.in=c.ni;s.add=c.na;
+  }
+  save();render();toast("全商品の搬入数を保存しました");
 }
 function payTotals(x,d){
   const m={};db.payments.forEach(p=>m[p]=0);
   transactions(x,d).forEach(t=>m[t.payment]=(m[t.payment]||0)+t.total);return m;
 }
+function staffForDay(x,d){
+  const arr=Array.isArray(x?.staffByDay?.[d])?x.staffByDay[d]:[];
+  return arr.filter(i=>String(i||'').trim()).map(i=>String(i).trim());
+}
+function staffEditor(x,d){
+  const current=staffForDay(x,d);
+  const names=db.staff.filter(s=>String(s||'').trim());
+  const options=names.map(s=>`<label style="display:flex;align-items:center;gap:7px;margin:5px 0;font-weight:500"><input type="checkbox" id="staff_${d}_${encodeURIComponent(s)}" value="${esc(s)}" ${current.includes(s)?'checked':''} style="width:auto">${esc(s)}</label>`).join('');
+  return `<div class="card"><div class="between"><h3 style="margin:0">👥 ${d}のスタッフ</h3><span class="pill">日ごとに変更できます</span></div>
+  ${names.length?options:`<p class="muted">スタッフマスターがまだありません。「設定」から登録してください。</p>`}
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="saveDayStaff('${d}')">この日のスタッフを保存</button><button class="soft" onclick="clearDayStaff('${d}')">全員解除</button></div>
+  </div>`;
+}
+function saveDayStaff(d){
+  const x=e();if(!x)return;
+  if(x.eventClosed)return alert("イベント締め後は変更できません。");
+  const vals=[];
+  document.querySelectorAll(`input[id^="staff_${d}_"]:checked`).forEach(el=>vals.push(el.value));
+  x.staffByDay=x.staffByDay||{};x.staffByDay[d]=[...new Set(vals)];
+  save();render();toast(`${d}のスタッフを保存しました`);
+}
+function clearDayStaff(d){
+  const x=e();if(!x)return;
+  if(x.eventClosed)return alert("イベント締め後は変更できません。");
+  if(!confirm(`${d}のスタッフを全員解除しますか？`))return;
+  pushUndo(x,`${d}のスタッフを解除`);x.staffByDay=x.staffByDay||{};x.staffByDay[d]=[];save();render();toast(`${d}のスタッフを解除しました`);
+}
+function saveDayNote(d){
+  const x=e();if(!x)return;
+  if(x.eventClosed)return alert("イベント締め後は変更できません。");
+  x.dayNotes=x.dayNotes||{};x.dayNotes[d]=(document.getElementById('dayNote')?.value||'').trim();save();render();toast(`${d}の日メモを保存しました`);
+}
 function daily(x){
   if(!x)return "";
-  const d=selectedDay(x),pm=payTotals(x,d),fee=x.feeMode==="daily"?(x.fees?.[d]||0):0,closed=x.closed?.[d];
+  const d=selectedDay(x),pm=payTotals(x,d),fee=x.feeMode==="daily"?(x.fees?.[d]||0):0,closed=!!x.closed?.[d];
+  const staff=staffForDay(x,d);
   return `<div class="card"><div class="between"><h2>日報・締め</h2><span class="pill">${closed?"締め済み":"未締め"}</span></div>
-  ${daySelect(x)}${closed?`<div class="dangerbox" style="margin-top:8px">この日は締め済みです。</div>`:""}
+  ${daySelect(x)}${closed?`<div class="dangerbox" style="margin-top:8px">この日は締め済みです。スタッフ・メモ・経費の変更はできません。</div>`:""}
   <div class="grid" style="margin-top:9px"><div><div class="muted">売上</div><div class="big">${yen(sales(x,d))}</div></div>
   <div><div class="muted">利益</div><div class="big">${yen(sales(x,d)-fee)}</div></div></div>
+  ${staffEditor(x,d)}
+  <div class="card" style="box-shadow:none;border:1px solid #e5e7eb"><div class="between"><h3 style="margin:0">📝 この日のメモ</h3><span class="muted">天候・客足・反省点など</span></div><textarea id="dayNote" rows="3" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:9px;font-size:15px;resize:vertical" ${closed||x.eventClosed?'disabled':''}>${esc(x.dayNotes?.[d]||'')}</textarea><button class="soft" style="margin-top:6px" ${closed||x.eventClosed?'disabled':''} onclick="saveDayNote('${d}')">メモを保存</button></div>
   <h3>支払方法</h3>${Object.entries(pm).map(([p,v])=>`<div class="between"><span>${esc(p)}</span><b>${yen(v)}</b></div>`).join("")}
   <h3>商品別</h3><table><tr><th>商品</th><th>数量</th><th>売上</th></tr>${db.products.map(p=>{
     const q=qty(x,p.id,d),v=transactions(x,d).reduce((s,t)=>s+t.items.filter(i=>i.productId===p.id).reduce((a,i)=>a+i.qty*i.price,0),0);
     return `<tr><td>${esc(p.name)}</td><td>${q}</td><td>${yen(v)}</td></tr>`;
   }).join("")}</table>
-  <h3>手数料・経費</h3>${x.feeMode==="daily"?`<input id="fee" type="number" value="${fee}"><button class="soft" style="margin-top:6px" onclick="setFee('${d}')">保存</button>`:`<p>イベント合算：${yen(x.feeTotal)}</p>`}
-  <div class="row" style="margin-top:10px"><button class="primary" onclick="closeDay('${d}')">${closed?"締めを再確認":"この日を締める"}</button><button class="soft" onclick="printDaily('${d}')">🖨 印刷</button></div></div>`;
+  <h3>手数料・経費</h3>${x.feeMode==="daily"?`<input id="fee" type="number" min="0" value="${fee}" ${closed||x.eventClosed?'disabled':''}><button class="soft" style="margin-top:6px" ${closed||x.eventClosed?'disabled':''} onclick="setFee('${d}')">保存</button>`:`<p>イベント合算：${yen(x.feeTotal)}</p>`}
+  <div class="row" style="margin-top:10px"><button class="primary" ${x.eventClosed?'disabled':''} onclick="closeDay('${d}')">${closed?"締め済み":"この日を締める"}</button><button class="soft" onclick="printDaily('${d}')">🖨 印刷</button></div></div>`;
 }
-function setFee(d){let x=e();x.fees=x.fees||{};x.fees[d]=Number(document.getElementById("fee").value)||0;save();render()}
+function setFee(d){let x=e();if(!x||x.eventClosed||x.closed?.[d])return alert("締め済みの日・イベントは経費を変更できません。");x.fees=x.fees||{};x.fees[d]=Math.max(0,Number(document.getElementById("fee").value)||0);save();render()}
 function closeDay(d){
-  const x=e();if(!confirm(`${d}を締めます。締め後も会計データは残ります。よろしいですか？`))return;
-  x.closed=x.closed||{};x.closed[d]=new Date().toISOString();save();render();
+  const x=e();
+  if(x.eventClosed)return alert("このイベントはすでに締め済みです。");
+  if(x.closed?.[d])return alert(`${d}はすでに締め済みです。`);
+  if(!confirm(`${d}を締めます。締め後も会計データは残ります。
+残ったストッカー在庫は次の販売日に引き継げるよう、ショーケースへ自動で繰り越します。
+よろしいですか？`))return;
+
+  pushUndo(x,`${d}を締めて在庫を翌日へ繰り越し`);
+  x.stock=x.stock||[];x.stockMoves=x.stockMoves||[];
+  const now=new Date().toISOString();
+  x.stock.forEach(s=>{
+    const n=num(s.store);
+    if(n>0){
+      s.store=0;
+      s.show=num(s.show)+n;
+      x.stockMoves.push({id:Date.now()+Math.random(),productId:s.productId,qty:n,type:"day_carryover",fromDay:d,timestamp:now});
+    }
+  });
+  x.closed=x.closed||{};x.closed[d]=now;
+  save();render();
+  toast(`${d}を締めました。残在庫は次の販売日に引き継がれます`);
 }
 
 function eventMetrics(x){
@@ -748,7 +830,7 @@ function summary(x){
   if(!x)return "";
   const m=eventMetrics(x), inv=endingInventory(x), prev=findPreviousEvent(x), pm=m.pay;
   const topProducts=m.prod.filter(p=>p.qty>0).slice(0,10);
-  const dailyRows=m.days.map(d=>`<tr><td>${d.day}</td><td>${d.qty}個</td><td>${yen(d.sales)}</td><td>${d.groups}組</td></tr>`).join("");
+  const dailyRows=m.days.map(d=>`<tr><td>${d.day}</td><td>${d.qty}個</td><td>${yen(d.sales)}</td><td>${d.groups}組</td><td>${esc(staffForDay(x,d).join('、')||'未登録')}</td></tr>`).join("");
   const payRows=Object.entries(pm).sort((a,b)=>b[1]-a[1]).map(([p,v])=>`<tr><td>${esc(p)}</td><td>${yen(v)}</td><td>${m.total?Math.round(v/m.total*100):0}%</td></tr>`).join("");
   const prodRows=topProducts.map((p,i)=>`<div class="rankrow"><b>${i+1}</b><span>${esc(p.name)}</span><b>${p.qty}個 / ${yen(p.sales)}</b></div>`).join("") || `<p class="muted">販売実績がありません。</p>`;
   const slotRows=Object.entries(m.slotData).sort((a,b)=>b[1].sales-a[1].sales).map(([k,v])=>`<tr><td>${k}</td><td>${v.qty}個</td><td>${yen(v.sales)}</td><td>${v.groups}組</td></tr>`).join("");
@@ -770,7 +852,8 @@ function summary(x){
   }else{
     compare=`<div class="card"><h3>前回イベントとの比較</h3><p class="muted">比較できる終了済みの前イベントがまだありません。次のイベントが終わると、今回との比較ができます。</p></div>`;
   }
-  return `<div class="card"><div class="between"><h2>イベント振り返り・分析</h2><span class="pill">${x.end<jpToday()?"終了イベント":"開催中/予定"}</span></div>
+  return `<div class="card"><div class="between"><h2>イベント振り返り・分析</h2><span class="pill">${x.eventClosed?"イベント締め済み":(x.end<jpToday()?"終了イベント":"開催中/予定")}</span></div>
+  ${x.eventClosed?`<div class="dangerbox">🔒 このイベントは締め済みです。過去データはそのまま残ります。</div><div class="row" style="margin-top:8px"><button class="primary" onclick="newEvent()">＋ 次のイベントを作る</button><button class="soft" onclick="location.hash='';db.tab='events';save();render()">イベント一覧へ</button></div>`:`<div class="row" style="margin-bottom:8px"><button class="warn" onclick="closeEvent()">🔒 このイベントを締める</button><button class="primary" onclick="location.hash='';db.tab='events';save();render()">イベント一覧へ</button></div>`}
     <p class="muted">${esc(x.name)}　${x.start} ～ ${x.end}</p>
     <div class="analysis-grid">
       <div class="analysis-box"><div class="label">総売上</div><div class="value">${yen(m.total)}</div></div>
@@ -783,7 +866,7 @@ function summary(x){
   </div>
   ${compare}
   <div class="card"><h3>🏆 商品販売ランキング</h3><div class="ranklist">${prodRows}</div></div>
-  <div class="card"><h3>📅 日別売上</h3><table><tr><th>日付</th><th>数量</th><th>売上</th><th>組数</th></tr>${dailyRows}</table></div>
+  <div class="card"><h3>📅 日別売上・スタッフ</h3><table><tr><th>日付</th><th>数量</th><th>売上</th><th>組数</th><th>スタッフ</th></tr>${dailyRows}</table></div>
   <div class="card"><h3>⏰ 時間帯別</h3><table><tr><th>時間帯</th><th>数量</th><th>売上</th><th>組数</th></tr>${slotRows}</table></div>
   <div class="card"><h3>💳 支払方法別</h3><table><tr><th>支払方法</th><th>売上</th><th>割合</th></tr>${payRows}</table></div>
   <div class="card"><h3>📦 イベント終了時の在庫</h3><p class="muted">販売数・残在庫を見て、次回イベントの搬入量を考えるための記録です。</p><div class="stocktable"><table class="smalltable"><tr><th>商品</th><th>総搬入</th><th>販売</th><th>ショーケース</th><th>ストッカー</th><th>残在庫</th></tr>${invRows}</table></div></div>
@@ -798,7 +881,7 @@ function settings(x){
   <div><label>販売開始</label><input id="open" type="time" value="${x?.open||"10:00"}"></div><div><label>販売終了</label><input id="close" type="time" value="${x?.close||"17:00"}"></div>
   <div><label>経費入力</label><select id="feeMode"><option value="daily" ${x?.feeMode!=="total"?"selected":""}>日ごと</option><option value="total" ${x?.feeMode==="total"?"selected":""}>イベント合算</option></select></div>
   <div><label>合算額</label><input id="feeTotal" type="number" value="${x?.feeTotal||0}"></div></div>
-  <button class="primary" style="margin-top:9px" onclick="saveEvent()">保存</button>${x?` <button class="bad" onclick="delEvent()">イベント削除</button>`:""}</div>
+  <button class="primary" style="margin-top:9px" ${x?.eventClosed?'disabled':''} onclick="saveEvent()">保存</button>${x?` <button class="bad" onclick="delEvent()">イベント削除</button>`:""}${x&&!x.eventClosed?` <button class="warn" style="margin-top:8px" onclick="closeEvent()">🔒 イベントを締める</button>`:x?` <div class="dangerbox" style="margin-top:8px">🔒 このイベントは ${esc(x.closedAt?new Date(x.closedAt).toLocaleString('ja-JP'):'')} に締め済みです。</div>`:""}</div>
   ${x?`<div class="card"><h3>イベント価格</h3><p class="muted">変更後の会計から新価格。過去の会計価格は変わりません。</p>
   ${db.products.map(p=>`<div class="row" style="margin:6px 0"><span style="flex:1">${esc(p.name)}</span><input id="ep_${p.id}" type="number" value="${x.prices?.[p.id]??p.price}"></div>`).join("")}
   <button class="soft" onclick="savePrices()">保存</button></div>`:""}
@@ -816,11 +899,12 @@ function settings(x){
 }
 function newEvent(){
   db.events.unshift({id:"e"+Date.now(),name:"新しいイベント",start:jpToday(),end:jpToday(),open:"10:00",close:"17:00",slot:1,
-    feeMode:"daily",feeTotal:0,fees:{},stock:[],stockMoves:[],undoStack:[],transactions:[],prices:Object.fromEntries(db.products.map(p=>[p.id,p.price])),closed:{},cart:[]});
+    feeMode:"daily",feeTotal:0,fees:{},stock:[],stockMoves:[],undoStack:[],transactions:[],prices:Object.fromEntries(db.products.map(p=>[p.id,p.price])),closed:{},staffByDay:{},dayNotes:{},eventClosed:false,closedAt:null,cart:[]});
   location.hash=db.events[0].id;db.tab="settings";save();render();
 }
 function saveEvent(){
   let x=e();if(!x){newEvent();return}
+  if(x.eventClosed)return alert("締め済みイベントは設定を変更できません。新しいイベントを作成してください。");
   const st=document.getElementById("start").value,en=document.getElementById("end").value;
   if(!st||!en||en<st)return alert("開催期間を正しく入力してください");
   Object.assign(x,{name:document.getElementById("ename").value,start:st,end:en,open:document.getElementById("open").value,
@@ -829,15 +913,30 @@ function saveEvent(){
   x.prices=x.prices||{};db.products.forEach(p=>x.prices[p.id]=x.prices[p.id]??p.price);
   save();db.tab="sale";render();
 }
-function delEvent(){let x=e();if(confirm("このイベントの全データを削除しますか？")){db.events=db.events.filter(q=>q.id!==x.id);location.hash="";db.tab="events";save();render()}}
-function savePrices(){let x=e();x.prices=x.prices||{};db.products.forEach(p=>x.prices[p.id]=Number(document.getElementById("ep_"+p.id).value)||0);save();render()}
+function closeEvent(){
+  const x=e();if(!x)return;
+  if(x.eventClosed)return alert("このイベントはすでに締め済みです。");
+  if(x.cart?.length)return alert("未確定のカートがあります。先にカートを取り消すか会計を確定してください。");
+  const openDays=dayList(x).filter(d=>!x.closed?.[d]);
+  const future=x.end>=jpToday();
+  let msg=`${x.name}をイベント終了として締めます。\n\n締め後は販売・在庫・スタッフ・経費・イベント価格の変更ができなくなります。\n未締めの日：${openDays.length?openDays.join('、'):'なし'}\n\nこのイベントを確定しますか？`;
+  if(future)msg+=`\n\n⚠ 開催期間の終了日（${x.end}）より前です。予定より早く終了する場合のみ実行してください。`;
+  if(!confirm(msg))return;
+  pushUndo(x,"イベントを締める");
+  const now=new Date().toISOString();
+  x.closed=x.closed||{};dayList(x).forEach(d=>{if(!x.closed[d])x.closed[d]=now;});
+  x.eventClosed=true;x.closedAt=now;
+  save();render();toast("イベントを締めました。次のイベントを作成できます");
+}
+function delEvent(){let x=e();if(!x)return;if(confirm("このイベントの全データを削除しますか？\n会計・在庫・日報もすべて削除されます。")){db.events=db.events.filter(q=>q.id!==x.id);location.hash="";db.tab="events";save();render()}}
+function savePrices(){let x=e();if(!x)return;if(x.eventClosed)return alert("締め済みイベントの価格は変更できません。");x.prices=x.prices||{};db.products.forEach(p=>x.prices[p.id]=Math.max(0,Number(document.getElementById("ep_"+p.id).value)||0));save();render()}
 function saveProduct(id){let p=db.products.find(q=>q.id===id);p.name=document.getElementById("n_"+id).value;p.price=Number(document.getElementById("p_"+id).value)||0;save();render()}
 function addProduct(){db.products.push({id:"p"+Date.now(),name:"新商品",price:400});save();render()}
-function saveStaff(i){db.staff[i]=document.getElementById("s_"+i).value;save();render()}
-function removeStaff(i){db.staff.splice(i,1);save();render()}
+function saveStaff(i){const v=(document.getElementById("s_"+i)?.value||"").trim();if(!v)return alert("スタッフ名を入力してください。");if(db.staff.some((s,j)=>j!==i&&String(s).trim()===v))return alert("同じスタッフ名がすでにあります。");db.staff[i]=v;save();render()}
+function removeStaff(i){if(db.staff.length<=1)return alert("スタッフは最低1名残してください。");if(!confirm(`${db.staff[i]}をスタッフマスターから削除しますか？\n過去日の記録は残ります。`))return;db.staff.splice(i,1);save();render()}
 function addStaff(){db.staff.push("新スタッフ");save();render()}
-function savePay(i){db.payments[i]=document.getElementById("m_"+i).value;save();render()}
-function removePay(i){if(db.payments.length>1)db.payments.splice(i,1);save();render()}
+function savePay(i){const v=(document.getElementById("m_"+i)?.value||"").trim();if(!v)return alert("支払方法を入力してください。");if(db.payments.some((s,j)=>j!==i&&String(s).trim()===v))return alert("同じ支払方法がすでにあります。");db.payments[i]=v;save();render()}
+function removePay(i){if(db.payments.length<=1)return alert("支払方法は最低1つ残してください。");if(!confirm(`${db.payments[i]}を削除しますか？\n過去の会計記録は残ります。`))return;db.payments.splice(i,1);save();render()}
 function addPay(){db.payments.push("新しい支払方法");save();render()}
 function resetAll(){
   if(!confirm("本当にすべてのデータを初期化しますか？\nイベント、会計履歴、在庫、商品・スタッフ・支払方法の設定もすべて削除されます。\nこの操作は元に戻せません。"))return;
@@ -859,7 +958,7 @@ function printDaily(d){
   const x=e(),pm=payTotals(x,d),fee=x.feeMode==="daily"?(x.fees?.[d]||0):0,app=document.getElementById("app"),old=app.innerHTML;
   app.innerHTML=`<div class="printarea"><h1>部門別売上日報（スイーツ工房イベント用）</h1><h2>${esc(x.name)}</h2>
   <p>${d}　${x.open}～${x.close}</p><h2>売上：${yen(sales(x,d))}</h2>
-  ${Object.entries(pm).map(([p,v])=>`<p>${esc(p)}：${yen(v)}</p>`).join("")}<h3>商品別</h3>
+  ${Object.entries(pm).map(([p,v])=>`<p>${esc(p)}：${yen(v)}</p>`).join("")}<h3>スタッフ</h3><p>${esc(staffForDay(x,d).join('、')||'未登録')}</p><h3>この日のメモ</h3><p>${esc(x.dayNotes?.[d]||'なし')}</p><h3>商品別</h3>
   ${db.products.map(p=>`<p>${esc(p.name)}：${qty(x,p.id,d)}個</p>`).join("")}<h3>時間帯別</h3>${slots(x,d)}
   <h3>手数料・経費：${yen(fee)}</h3><h2>利益：${yen(sales(x,d)-fee)}</h2></div>`;
   window.print();app.innerHTML=old;
