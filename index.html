@@ -898,7 +898,7 @@ function settings(x){
   <div class="card"><h3>クラウド同期</h3><p class="muted">ログイン中：${esc(cloudUser?.email||"未ログイン")}</p>${cloudUser?`<button class="soft" onclick="cloudLogout()">ログアウト</button>`:`<p class="muted">ログインすると、この端末の会計データをPC・iPhone・Androidで共有できます。</p>`}</div>
   <div class="card"><h3>データ保護</h3><p class="muted">イベント終了後などにバックアップしてください。</p><button class="soft" onclick="backup()">バックアップ保存</button>
   <label>バックアップ復元</label><input type="file" accept=".json" onchange="restore(this)">
-  <div class="dangerbox" style="margin-top:14px"><b>全データを初期化</b><p class="muted">イベント・会計履歴・在庫・設定をすべて削除して、アプリを最初の状態に戻します。</p><button class="bad" onclick="resetAll()">⚠ すべて初期化する</button></div></div>
+  <div class="dangerbox" style="margin-top:14px"><b>🧹 データ初期化</b><p class="muted">何を消すか選んで初期化できます。クラウド同期中の場合は、選択した内容がPC・iPhone側にも反映されます。</p><button class="bad" style="width:100%" onclick="openResetPanel()">⚠ 初期化メニューを開く</button><div id="resetPanel"></div></div></div>
   <div class="notice">iPhone運用：HTTPSで公開したページをSafariで開き、「共有 → ホーム画面に追加 → Webアプリとして開く」でホーム画面に追加します。</div>`;
 }
 function newEvent(){
@@ -942,11 +942,83 @@ function addStaff(){db.staff.push("新スタッフ");save();render()}
 function savePay(i){const v=(document.getElementById("m_"+i)?.value||"").trim();if(!v)return alert("支払方法を入力してください。");if(db.payments.some((s,j)=>j!==i&&String(s).trim()===v))return alert("同じ支払方法がすでにあります。");db.payments[i]=v;save();render()}
 function removePay(i){if(db.payments.length<=1)return alert("支払方法は最低1つ残してください。");if(!confirm(`${db.payments[i]}を削除しますか？\n過去の会計記録は残ります。`))return;db.payments.splice(i,1);save();render()}
 function addPay(){db.payments.push("新しい支払方法");save();render()}
-function resetAll(){
-  if(!confirm("本当にすべてのデータを初期化しますか？\nイベント、会計履歴、在庫、商品・スタッフ・支払方法の設定もすべて削除されます。\nこの操作は元に戻せません。"))return;
-  if(!confirm("最終確認です。本当にリセットしますか？"))return;
-  localStorage.removeItem(KEY);location.hash="";location.reload();
+function defaultDb(){
+  return {events:[],products:base.map(x=>({id:x[0],name:x[1],price:x[2]})),staff:["スタッフ1","スタッフ2"],payments:["現金","PayPay"],tab:"events"};
 }
+function resetSnapshotLabel(x){
+  if(!x)return "現在のイベント";
+  return `${x.name||"現在のイベント"}（${x.start||""} ～ ${x.end||""}）`;
+}
+function openResetPanel(){
+  const box=document.getElementById("resetPanel");if(!box)return;
+  const x=e();
+  box.innerHTML=`<div class="card" style="box-shadow:none;border:1px solid #fecaca;margin:9px 0 0">
+    <h3 style="margin-top:0">初期化する範囲を選択</h3>
+    <label style="display:flex;align-items:center;gap:8px;font-weight:500"><input id="resetAllEvents" type="checkbox" style="width:auto" onchange="toggleResetChecks(this.checked)"> 🔴 全イベントを削除（イベント一覧も空にする）</label>
+    <div id="resetDetails" style="margin-top:8px">
+      <label style="display:flex;align-items:center;gap:8px;font-weight:500"><input id="resetCurrentEventData" type="checkbox" style="width:auto"> 現在のイベントの会計・日報・経費・締め状態を初期化</label>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:500"><input id="resetCurrentStock" type="checkbox" style="width:auto"> 現在のイベントの在庫・搬入履歴を初期化</label>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:500"><input id="resetCurrentSettings" type="checkbox" style="width:auto"> 現在のイベント設定を初期値に戻す</label>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:500"><input id="resetMasters" type="checkbox" style="width:auto"> 商品・スタッフ・支払方法を初期値に戻す</label>
+    </div>
+    <div class="notice" style="margin-top:9px"><b>現在のイベント：</b>${esc(resetSnapshotLabel(x))}<br>
+    <span class="muted">「会計・日報」を選ぶと売上、会計履歴、日ごとのスタッフ、メモ、経費、日締め状態、未確定カートなどを消します。在庫は別に選択できます。</span></div>
+    <div class="row" style="margin-top:9px"><button class="bad" style="flex:1" onclick="executeReset()">選択した内容を初期化</button><button class="soft" onclick="document.getElementById('resetPanel').innerHTML=''">閉じる</button></div>
+  </div>`;
+}
+function toggleResetChecks(all){
+  const ids=["resetCurrentEventData","resetCurrentStock","resetCurrentSettings","resetMasters"];
+  ids.forEach(id=>{const el=document.getElementById(id);if(el){el.checked=all;el.disabled=all;}});
+}
+function executeReset(){
+  const all=document.getElementById("resetAllEvents")?.checked;
+  const curData=document.getElementById("resetCurrentEventData")?.checked;
+  const curStock=document.getElementById("resetCurrentStock")?.checked;
+  const curSettings=document.getElementById("resetCurrentSettings")?.checked;
+  const masters=document.getElementById("resetMasters")?.checked;
+  if(!all&&!curData&&!curStock&&!curSettings&&!masters)return alert("初期化する項目を1つ以上選択してください。");
+  const x=e();
+  let msg="選択したデータを初期化します。\n\n";
+  if(all)msg+="・全イベントを削除\n";
+  else{
+    if(curData)msg+="・現在のイベントの会計・日報・経費・締め状態\n";
+    if(curStock)msg+="・現在のイベントの在庫・搬入履歴\n";
+    if(curSettings)msg+="・現在のイベント設定\n";
+  }
+  if(masters)msg+="・商品・スタッフ・支払方法\n";
+  msg+="\nこの操作は元に戻せません。先にバックアップを保存することをおすすめします。";
+  if(!confirm(msg))return;
+  if(!confirm("最終確認：本当に選択したデータを初期化しますか？"))return;
+
+  if(all){
+    db=defaultDb();
+    location.hash="";
+    db.tab="events";
+  }else{
+    if(x){
+      if(curData){
+        x.transactions=[];x.cart=[];x.closed={};x.editTxId=null;x.fees={};x.staffByDay={};x.dayNotes={};x.eventClosed=false;x.closedAt=null;x.undoStack=[];
+      }
+      if(curStock){x.stock=[];x.stockMoves=[];x.addByDay={};}
+      if(curSettings){
+        x.name="新しいイベント";x.start=jpToday();x.end=jpToday();x.open="10:00";x.close="17:00";x.slot=1;x.feeMode="daily";x.feeTotal=0;x.fees={};x.prices=Object.fromEntries(db.products.map(p=>[p.id,p.price]));x.closed={};x.eventClosed=false;x.closedAt=null;
+      }
+    }
+    if(masters){
+      db.products=base.map(v=>({id:v[0],name:v[1],price:v[2]}));
+      db.staff=["スタッフ1","スタッフ2"];
+      db.payments=["現金","PayPay"];
+      (db.events||[]).forEach(ev=>{ev.prices=Object.fromEntries(db.products.map(p=>[p.id,p.price]));});
+    }
+  }
+  normalizeDb();
+  save();
+  if(!x && !all){location.hash="";}
+  db.tab=all?"events":(e()?"sale":"events");
+  render();
+  toast("選択したデータを初期化しました");
+}
+function resetAll(){openResetPanel();}
 function backup(){
   const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(db,null,2)],{type:"application/json"}));
   a.download="tart-event-backup-"+jpToday()+".json";a.click();
