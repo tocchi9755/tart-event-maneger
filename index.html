@@ -111,6 +111,7 @@ function normalizeDb(){
     ev.fees=ev.fees&&typeof ev.fees==="object"?ev.fees:{};
     ev.staffByDay=ev.staffByDay&&typeof ev.staffByDay==="object"?ev.staffByDay:{};
     ev.dayNotes=ev.dayNotes&&typeof ev.dayNotes==="object"?ev.dayNotes:{};
+    ev.addByDay=ev.addByDay&&typeof ev.addByDay==="object"?ev.addByDay:{};
     ev.eventClosed=!!ev.eventClosed;
     ev.closedAt=ev.closedAt||null;
   });
@@ -344,12 +345,19 @@ function changeShow(x,pid,delta){
 function consumeForSale(x,items){
   const m=stockMap(x);
   for(const i of items){
-    if((m[i.productId]?.show||0)<num(i.qty)){
+    const total=(m[i.productId]?.show||0)+(m[i.productId]?.store||0);
+    if(total<num(i.qty)){
       const p=db.products.find(q=>q.id===i.productId);
-      return {ok:false,name:p?.name||i.name,available:m[i.productId]?.show||0,need:num(i.qty)};
+      return {ok:false,name:p?.name||i.name,available:total,need:num(i.qty)};
     }
   }
-  for(const i of items)ensureStock(x,i.productId).show-=num(i.qty);
+  for(const i of items){
+    const s=ensureStock(x,i.productId),n=num(i.qty);
+    const fromShow=Math.min(num(s.show),n);
+    s.show-=fromShow;
+    const remain=n-fromShow;
+    if(remain>0)s.store-=remain;
+  }
   return {ok:true};
 }
 function returnToShowcase(x,items){
@@ -360,7 +368,7 @@ function returnToShowcase(x,items){
    Firebaseへ一緒に保存するため、PCとiPhoneの間でもUndo状態を共有する。 */
 function pushUndo(x,label){
   x.undoStack=Array.isArray(x.undoStack)?x.undoStack:[];
-  const snap={label,timestamp:new Date().toISOString(),stock:JSON.parse(JSON.stringify(x.stock||[])),stockMoves:JSON.parse(JSON.stringify(x.stockMoves||[])),transactions:JSON.parse(JSON.stringify(x.transactions||[])),cart:JSON.parse(JSON.stringify(x.cart||[])),fees:JSON.parse(JSON.stringify(x.fees||{})),closed:JSON.parse(JSON.stringify(x.closed||{})),staffByDay:JSON.parse(JSON.stringify(x.staffByDay||{})),dayNotes:JSON.parse(JSON.stringify(x.dayNotes||{})),eventClosed:!!x.eventClosed,closedAt:x.closedAt||null};
+  const snap={label,timestamp:new Date().toISOString(),stock:JSON.parse(JSON.stringify(x.stock||[])),stockMoves:JSON.parse(JSON.stringify(x.stockMoves||[])),transactions:JSON.parse(JSON.stringify(x.transactions||[])),cart:JSON.parse(JSON.stringify(x.cart||[])),fees:JSON.parse(JSON.stringify(x.fees||{})),closed:JSON.parse(JSON.stringify(x.closed||{})),staffByDay:JSON.parse(JSON.stringify(x.staffByDay||{})),dayNotes:JSON.parse(JSON.stringify(x.dayNotes||{})),addByDay:JSON.parse(JSON.stringify(x.addByDay||{})),eventClosed:!!x.eventClosed,closedAt:x.closedAt||null};
   x.undoStack.push(snap);
   if(x.undoStack.length>20)x.undoStack.shift();
 }
@@ -377,6 +385,7 @@ function undoLastStep(){
   x.closed=JSON.parse(JSON.stringify(u.closed||{}));
   x.staffByDay=JSON.parse(JSON.stringify(u.staffByDay||{}));
   x.dayNotes=JSON.parse(JSON.stringify(u.dayNotes||{}));
+  x.addByDay=JSON.parse(JSON.stringify(u.addByDay||{}));
   x.eventClosed=!!u.eventClosed;
   x.closedAt=u.closedAt||null;
   x.editTxId=null;
@@ -482,8 +491,8 @@ function sale(x){
   ${eventClosed?`<div class="dangerbox">このイベントは締め済みです。会計は追加できません。</div>`:`<p class="muted">販売はショーケース在庫から減ります。</p>`}
   <div class="products">${db.products.map(p=>`<div class="prod"><b>${esc(p.name)}</b>
   <small>${yen(x.prices?.[p.id]??p.price)}　ショーケース ${sm[p.id].show}個　／　ストッカー ${sm[p.id].store}個</small>
-  <div class="quickpay"><button class="soft" ${eventClosed||closed||sm[p.id].show<1?'disabled':''} onclick="add('${p.id}',this)">カートに追加</button>
-  ${db.payments.map(pay=>`<button class="${pay==='現金'?'good':'primary'}" ${eventClosed||closed||sm[p.id].show<1?'disabled':''} onclick="quickSale('${p.id}','${esc(pay)}',this)">${esc(pay)} +1</button>`).join("")}
+  <div class="quickpay"><button class="soft" ${eventClosed||closed||(sm[p.id].show+sm[p.id].store)<1?'disabled':''} onclick="add('${p.id}',this)">カートに追加</button>
+  ${db.payments.map(pay=>`<button class="${pay==='現金'?'good':'primary'}" ${eventClosed||closed||(sm[p.id].show+sm[p.id].store)<1?'disabled':''} onclick="quickSale('${p.id}','${esc(pay)}',this)">${esc(pay)} +1</button>`).join("")}
   </div></div>`).join("")}</div></div>
   ${cartHTML(x)}
   <div class="card"><h3>会計履歴（${d}）</h3>${historyHTML(x,d)}</div>
@@ -658,12 +667,12 @@ function inventory(x){
   return `<div class="card"><h2>在庫管理</h2>
   <p class="muted">初回搬入はショーケースへ、追加搬入はストッカーへ入ります。販売するとショーケースから減ります。ストッカー→ショーケースは「移動」ボタンで記録します。日を締めると残ったストッカー在庫は次の販売日に使えるようショーケースへ自動で繰り越します。</p>
   <div class="stocknote"><b>総在庫 ＝ ショーケース ＋ ストッカー</b><br>
-  初回搬入 ＋ 追加搬入 − 販売数 ＝ 総在庫</div></div>
+  初回搬入 ＋ 追加搬入累計 − 販売数 ＝ 総在庫</div></div>
   ${db.products.map(p=>{const q=m[p.id];return `<div class="card stockcard">
     <div class="between"><h3>${esc(p.name)}</h3><span class="stocktotal">${q.remaining}個</span></div>
     <div class="grid">
       <div><label>初回搬入（ショーケースへ）</label><input id="in_${p.id}" type="number" min="0" value="${q.in}" ${x.eventClosed?'disabled':''}></div>
-      <div><label>追加搬入（ストッカーへ）</label><input id="add_${p.id}" type="number" min="0" value="${q.add}" ${x.eventClosed?'disabled':''}></div>
+      <div><label>今回の追加搬入（ストッカーへ）</label><input id="add_${p.id}" type="number" min="0" value="${num(x.addByDay?.[selectedDay(x)]?.[p.id])}" ${x.eventClosed||x.closed?.[selectedDay(x)]?'disabled':''}></div>
       <div><label>ショーケース</label><input type="number" value="${q.show}" readonly></div>
       <div><label>ストッカー</label><input type="number" value="${q.store}" readonly></div>
     </div>
@@ -671,34 +680,39 @@ function inventory(x){
     <div class="row"><button class="primary" ${x.eventClosed?'disabled':''} onclick="transferToShow('${p.id}')">ストッカー → ショーケース</button><button class="soft" ${x.eventClosed?'disabled':''} onclick="transferToStock('${p.id}')">ショーケース → ストッカー</button></div></div>
   </div>`}).join("")}
   <div class="card"><div class="row" style="margin-bottom:8px">${undoButton()}<button class="soft" onclick="location.reload()">表示を更新</button></div><button class="primary" style="width:100%;padding:14px" ${x.eventClosed?'disabled':''} onclick="saveAllStock()">💾 搬入数をすべて保存</button>
-  <p class="muted" style="margin:7px 0 0">初回搬入の増減はショーケース、追加搬入の増減はストッカーへ反映します。販売数・移動数は自動管理されます。</p></div>`;
+  <p class="muted" style="margin:7px 0 0">初回搬入の増減はショーケース、追加搬入は今回入力した数量をストッカーへ加算します。前日のストッカー残りは上書きされません。</p></div>`;
 }
 function saveAllStock(){
   const x=e();if(!x)return;
   if(x.eventClosed)return alert("締め済みイベントは在庫を変更できません。");
-  x.stock=x.stock||[];x.stockMoves=x.stockMoves||[];
+  const d=selectedDay(x);
+  if(x.closed?.[d])return alert(`${d}は締め済みのため搬入できません。`);
+  x.stock=x.stock||[];x.stockMoves=x.stockMoves||[];x.addByDay=x.addByDay||{};x.addByDay[d]=x.addByDay[d]||{};
   const m=stockMap(x),changes=[];
   for(const p of db.products){
     const old=m[p.id]||{in:0,add:0,show:0,store:0};
     const ni=num(document.getElementById("in_"+p.id)?.value);
     const na=num(document.getElementById("add_"+p.id)?.value);
-    const di=ni-old.in,da=na-old.add;
+    const di=ni-old.in;
+    // 追加搬入は「今回の追加分」。過去日の追加搬入累計を上書きしない。
     if(di<0 && old.show<(-di))return alert(`${p.name}の初回搬入数を減らせません。現在のショーケース在庫が不足します。`);
-    if(da<0 && old.store<(-da))return alert(`${p.name}の追加搬入数を減らせません。現在のストッカー在庫が不足します。`);
-    changes.push({p,ni,na,di,da});
+    changes.push({p,ni,na,di});
   }
-  const changed=changes.some(c=>c.di!==0||c.da!==0);
+  const changed=changes.some(c=>c.di!==0||c.na>0);
   if(!changed)return toast("搬入数に変更はありません");
   pushUndo(x,"搬入数を変更");
   for(const c of changes){
     const s=ensureStock(x,c.p.id);
-    if(c.di>0)s.show+=c.di;
-    if(c.di<0)s.show+=c.di;
-    if(c.da>0)s.store+=c.da;
-    if(c.da<0)s.store+=c.da;
-    s.in=c.ni;s.add=c.na;
+    if(c.di!==0)s.show+=c.di;
+    if(c.na>0){
+      s.store+=c.na;
+      s.add=num(s.add)+c.na;
+      x.addByDay[d][c.p.id]=num(x.addByDay[d][c.p.id])+c.na;
+      x.stockMoves.push({id:Date.now()+Math.random(),productId:c.p.id,qty:c.na,type:"additional_delivery",day:d,timestamp:new Date().toISOString()});
+    }
+    s.in=c.ni;
   }
-  save();render();toast("全商品の搬入数を保存しました");
+  save();render();toast(`${d}の追加搬入を保存しました`);
 }
 function payTotals(x,d){
   const m={};db.payments.forEach(p=>m[p]=0);
@@ -760,21 +774,11 @@ function closeDay(d){
   if(x.eventClosed)return alert("このイベントはすでに締め済みです。");
   if(x.closed?.[d])return alert(`${d}はすでに締め済みです。`);
   if(!confirm(`${d}を締めます。締め後も会計データは残ります。
-残ったストッカー在庫は次の販売日に引き継げるよう、ショーケースへ自動で繰り越します。
+ショーケース・ストッカーの残在庫はそのまま次の日へ引き継がれます。
 よろしいですか？`))return;
 
   pushUndo(x,`${d}を締めて在庫を翌日へ繰り越し`);
-  x.stock=x.stock||[];x.stockMoves=x.stockMoves||[];
-  const now=new Date().toISOString();
-  x.stock.forEach(s=>{
-    const n=num(s.store);
-    if(n>0){
-      s.store=0;
-      s.show=num(s.show)+n;
-      x.stockMoves.push({id:Date.now()+Math.random(),productId:s.productId,qty:n,type:"day_carryover",fromDay:d,timestamp:now});
-    }
-  });
-  x.closed=x.closed||{};x.closed[d]=now;
+  x.closed=x.closed||{};x.closed[d]=new Date().toISOString();
   save();render();
   toast(`${d}を締めました。残在庫は次の販売日に引き継がれます`);
 }
