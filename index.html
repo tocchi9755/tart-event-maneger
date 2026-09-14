@@ -320,7 +320,13 @@ function selectedDay(x){
 }
 function transactions(x,day=null){return (x?.transactions||[]).filter(t=>t.status!=="void"&&(!day||t.day===day))}
 function allTransactions(x,day=null){return (x?.transactions||[]).filter(t=>!day||t.day===day)}
-function nextGroupNo(x,d){return Math.max(0,...(x.transactions||[]).filter(t=>t.day===d).map(t=>Number(t.groupNo)||0))+1}
+function nextGroupNo(x,d){
+  // 会計番号は必ず「その日の会計」だけを基準にする。前日の番号は一切参照しない。
+  const nums=(x.transactions||[])
+    .filter(t=>t.day===d && t.status!=="void")
+    .map(t=>Number(t.groupNo)||0);
+  return Math.max(0,...nums)+1;
+}
 function sales(x,day=null){return transactions(x,day).reduce((s,t)=>s+Number(t.total||0),0)}
 function qty(x,pid,day=null){
   return transactions(x,day).reduce((s,t)=>s+(t.items||[]).filter(i=>i.productId===pid).reduce((a,i)=>a+num(i.qty),0),0);
@@ -873,7 +879,7 @@ function summary(x){
   if(!x)return "";
   const m=eventMetrics(x), inv=endingInventory(x), prev=findPreviousEvent(x), pm=m.pay;
   const topProducts=m.prod.filter(p=>p.qty>0).slice(0,10);
-  const dailyRows=m.days.map(d=>`<tr><td>${d.day}</td><td>${d.qty}個</td><td>${yen(d.sales)}</td><td>${d.groups}組</td><td>${esc(staffForDay(x,d).join('、')||'未登録')}</td></tr>`).join("");
+  const dailyRows=m.days.map(d=>`<tr><td>${d.day}</td><td>${d.qty}個</td><td>${yen(d.sales)}</td><td>${d.groups}組</td><td>${esc((d.staff||[]).join('、')||'未登録')}</td></tr>`).join("");
   const payRows=Object.entries(pm).sort((a,b)=>b[1]-a[1]).map(([p,v])=>`<tr><td>${esc(p)}</td><td>${yen(v)}</td><td>${m.total?Math.round(v/m.total*100):0}%</td></tr>`).join("");
   const prodRows=topProducts.map((p,i)=>`<div class="rankrow"><b>${i+1}</b><span>${esc(p.name)}</span><b>${p.qty}個 / ${yen(p.sales)}</b></div>`).join("") || `<p class="muted">販売実績がありません。</p>`;
   const slotRows=Object.entries(m.slotData).sort((a,b)=>b[1].sales-a[1].sales).map(([k,v])=>`<tr><td>${k}</td><td>${v.qty}個</td><td>${yen(v.sales)}</td><td>${v.groups}組</td></tr>`).join("");
