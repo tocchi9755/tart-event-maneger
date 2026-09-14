@@ -65,7 +65,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 <script src="./firebase-config.js"></script>
 <script>
 /*
-  タルト販売管理 v8
+  タルト販売管理 v8.1
   - Firebaseの既存保存先・既存KEYを維持
   - iPhone/PC/Androidの同期方式を変更しない
   - 在庫の物理フローを明確化
@@ -271,10 +271,11 @@ const num=v=>Math.max(0,Math.floor(Number(v)||0));
 /* 会計番号を維持 */
 (db.events||[]).forEach(ev=>{
   ev.transactions=ev.transactions||[];
-  let n=1;
+  const counters={};
   ev.transactions.slice().sort((a,b)=>(a.id||0)-(b.id||0)).forEach(t=>{
-    if(!t.groupNo)t.groupNo=n;
-    n=Math.max(n,(Number(t.groupNo)||0)+1);
+    const d=t.day||"unknown";
+    counters[d]=counters[d]||1;
+    t.groupNo=counters[d]++;
   });
   ev.cart=ev.cart||[];
 });
@@ -298,7 +299,7 @@ function selectedDay(x){
 }
 function transactions(x,day=null){return (x?.transactions||[]).filter(t=>t.status!=="void"&&(!day||t.day===day))}
 function allTransactions(x,day=null){return (x?.transactions||[]).filter(t=>!day||t.day===day)}
-function nextGroupNo(x){return Math.max(0,...(x.transactions||[]).map(t=>Number(t.groupNo)||0))+1}
+function nextGroupNo(x,d){return Math.max(0,...(x.transactions||[]).filter(t=>t.day===d).map(t=>Number(t.groupNo)||0))+1}
 function sales(x,day=null){return transactions(x,day).reduce((s,t)=>s+Number(t.total||0),0)}
 function qty(x,pid,day=null){
   return transactions(x,day).reduce((s,t)=>s+(t.items||[]).filter(i=>i.productId===pid).reduce((a,i)=>a+num(i.qty),0),0);
@@ -374,6 +375,7 @@ function pushUndo(x,label){
 }
 function undoLastStep(){
   const x=e(); if(!x)return;
+  if(x.eventClosed)return alert("締め済みイベントは元に戻せません。バックアップからの復元を利用してください。");
   x.undoStack=Array.isArray(x.undoStack)?x.undoStack:[];
   const u=x.undoStack.pop();
   if(!u)return alert("戻せる操作がありません。");
@@ -393,7 +395,7 @@ function undoLastStep(){
 }
 function undoButton(){
   const x=e(),n=x?.undoStack?.length||0;
-  return `<button class="warn" ${n?'':'disabled'} onclick="undoLastStep()">↩ 1手順前に戻す${n?`（残り${n}）`:''}</button>`;
+  return `<button class="warn" ${n&&!x?.eventClosed?'':'disabled'} onclick="undoLastStep()">↩ 1手順前に戻す${n?`（残り${n}）`:''}</button>`;
 }
 
 /* 明示的なストッカー→ショーケース移動 */
@@ -486,7 +488,7 @@ function sale(x){
   const d=selectedDay(x),sm=stockMap(x),closed=!!x.closed?.[d],eventClosed=!!x.eventClosed;
   return `${x.editTxId?txEditor(x,x.editTxId):""}
   <div class="card"><div class="row" style="justify-content:flex-end;margin-bottom:8px">${undoButton()}</div><div class="grid"><div>${daySelect(x)}</div><div style="text-align:right">
-  <div class="muted">本日の売上</div><div class="big">${yen(sales(x,d))}</div><div class="muted">${transactions(x,d).length}組</div></div></div></div>
+  <div class="muted">本日の売上</div><div class="big">${yen(sales(x,d))}</div><div class="muted">本日 ${transactions(x,d).length}組</div></div></div></div>
   <div class="card"><div class="between"><h3 style="margin:0">かんたん会計</h3><span class="pill">${x.slot||1}時間ごと集計</span></div>
   ${eventClosed?`<div class="dangerbox">このイベントは締め済みです。会計は追加できません。</div>`:`<p class="muted">販売はショーケース在庫から減ります。</p>`}
   <div class="products">${db.products.map(p=>`<div class="prod"><b>${esc(p.name)}</b>
@@ -523,7 +525,7 @@ function historyHTML(x,d){
     <div class="txitems">${(t.items||[]).map(i=>`${esc(i.name)} ×${i.qty}`).join(' ／ ')}</div>
     ${!voided?`<div class="txactions"><button class="soft" onclick="openTx('${t.id}')">編集</button><button class="bad" onclick="voidTx('${t.id}')">この会計を取消</button></div>`
     :`<div class="muted">この会計は売上・販売数から除外されています。</div>`}</div>`;
-  }).join("")}</div><div class="between" style="margin-top:10px"><b>本日の合計</b><b class="big">${yen(sales(x,d))}</b></div><div class="muted">販売組数：${transactions(x,d).length}組</div>`;
+  }).join("")}</div><div class="between" style="margin-top:10px"><b>本日の合計</b><b class="big">${yen(sales(x,d))}</b></div><div class="muted">本日の販売組数：${transactions(x,d).length}組</div>`;
 }
 function txEditor(x,id){
   const t=(x.transactions||[]).find(q=>String(q.id)===String(id));if(!t)return "";
@@ -562,12 +564,18 @@ function saveTx(id){
   const m=stockMap(x);
   for(const p of db.products){
     const diff=(newBy[p.id]||0)-(oldBy[p.id]||0);
-    if(diff>0 && (m[p.id]?.show||0)<diff)return alert(`${p.name}のショーケース在庫が不足しています。`);
+    if(diff>0 && ((m[p.id]?.show||0)+(m[p.id]?.store||0))<diff)
+      return alert(`${p.name}の在庫が不足しています。\n現在：${(m[p.id]?.show||0)+(m[p.id]?.store||0)}個`);
   }
   pushUndo(x,`${Number(t.groupNo)||'?'}組目の会計を編集`);
   for(const p of db.products){
     const diff=(newBy[p.id]||0)-(oldBy[p.id]||0);
-    if(diff>0)ensureStock(x,p.id).show-=diff;
+    if(diff>0){
+      const s=ensureStock(x,p.id);
+      const fromShow=Math.min(num(s.show),diff);
+      s.show-=fromShow;
+      s.store-=diff-fromShow;
+    }
     if(diff<0)ensureStock(x,p.id).show+=(-diff);
   }
   const oldTotal=t.total;
@@ -607,7 +615,7 @@ function cancelCart(){
 
 function createTransaction(x,d,items,pay){
   const now=new Date();
-  const t={id:Date.now()+Math.floor(Math.random()*1000),groupNo:nextGroupNo(x),timestamp:now.toISOString(),day:d,
+  const t={id:Date.now()+Math.floor(Math.random()*1000),groupNo:nextGroupNo(x,d),timestamp:now.toISOString(),day:d,
     items:items.map(i=>({...i})),total:items.reduce((s,i)=>s+i.qty*i.price,0),payment:pay,status:"completed"};
   x.transactions.push(t);return t;
 }
@@ -665,14 +673,14 @@ function fmt(m){return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60)
 function inventory(x){
   const m=stockMap(x);
   return `<div class="card"><h2>在庫管理</h2>
-  <p class="muted">初回搬入はショーケースへ、追加搬入はストッカーへ入ります。販売するとショーケースから減ります。ストッカー→ショーケースは「移動」ボタンで記録します。日を締めると残ったストッカー在庫は次の販売日に使えるようショーケースへ自動で繰り越します。</p>
+  <p class="muted">初回搬入はショーケースへ、追加搬入はストッカーへ入ります。販売はショーケースを優先し、不足分はストッカーから自動で使用します。ストッカー↔ショーケースの移動はボタンで記録します。日締めでは在庫を移動せず、そのまま翌日に繰り越します。</p>
   <div class="stocknote"><b>総在庫 ＝ ショーケース ＋ ストッカー</b><br>
   初回搬入 ＋ 追加搬入累計 − 販売数 ＝ 総在庫</div></div>
   ${db.products.map(p=>{const q=m[p.id];return `<div class="card stockcard">
     <div class="between"><h3>${esc(p.name)}</h3><span class="stocktotal">${q.remaining}個</span></div>
     <div class="grid">
       <div><label>初回搬入（ショーケースへ）</label><input id="in_${p.id}" type="number" min="0" value="${q.in}" ${x.eventClosed?'disabled':''}></div>
-      <div><label>今回の追加搬入（ストッカーへ）</label><input id="add_${p.id}" type="number" min="0" value="${num(x.addByDay?.[selectedDay(x)]?.[p.id])}" ${x.eventClosed||x.closed?.[selectedDay(x)]?'disabled':''}></div>
+      <div><label>今回の追加搬入（ストッカーへ）</label><input id="add_${p.id}" type="number" min="0" value="0" ${x.eventClosed||x.closed?.[selectedDay(x)]?'disabled':''}><small class="muted">本日の追加済み：${num(x.addByDay?.[selectedDay(x)]?.[p.id])}個</small></div>
       <div><label>ショーケース</label><input type="number" value="${q.show}" readonly></div>
       <div><label>ストッカー</label><input type="number" value="${q.store}" readonly></div>
     </div>
@@ -719,8 +727,10 @@ function payTotals(x,d){
   transactions(x,d).forEach(t=>m[t.payment]=(m[t.payment]||0)+t.total);return m;
 }
 function staffForDay(x,d){
-  const arr=Array.isArray(x?.staffByDay?.[d])?x.staffByDay[d]:[];
-  return arr.filter(i=>String(i||'').trim()).map(i=>String(i).trim());
+  const raw=x?.staffByDay?.[d];
+  if(Array.isArray(raw)) return [...new Set(raw.filter(i=>String(i||"").trim()).map(i=>String(i).trim()))];
+  if(typeof raw==="string" && raw.trim()) return [...new Set(raw.split(/[,、\n]/).map(i=>i.trim()).filter(Boolean))];
+  return [];
 }
 function staffEditor(x,d){
   const current=staffForDay(x,d);
@@ -734,10 +744,18 @@ function staffEditor(x,d){
 function saveDayStaff(d){
   const x=e();if(!x)return;
   if(x.eventClosed)return alert("イベント締め後は変更できません。");
+  if(x.closed?.[d])return alert(`${d}は締め済みのためスタッフを変更できません。`);
   const vals=[];
-  document.querySelectorAll(`input[id^="staff_${d}_"]:checked`).forEach(el=>vals.push(el.value));
-  x.staffByDay=x.staffByDay||{};x.staffByDay[d]=[...new Set(vals)];
-  save();render();toast(`${d}のスタッフを保存しました`);
+  document.querySelectorAll(`input[id^="staff_${d}_"]:checked`).forEach(el=>{
+    const v=String(el.value||"").trim();
+    if(v)vals.push(v);
+  });
+  pushUndo(x,`${d}のスタッフを保存`);
+  x.staffByDay=x.staffByDay||{};
+  x.staffByDay[d]=[...new Set(vals)];
+  save();
+  render();
+  toast(`${d}のスタッフを保存しました：${x.staffByDay[d].join("、")||"未登録"}`);
 }
 function clearDayStaff(d){
   const x=e();if(!x)return;
@@ -864,13 +882,15 @@ function summary(x){
       <div class="analysis-box"><div class="label">総販売数</div><div class="value">${m.allq}個</div></div>
       <div class="analysis-box"><div class="label">利益</div><div class="value">${yen(m.profit)}</div></div>
       <div class="analysis-box"><div class="label">1組平均購入額</div><div class="value">${yen(m.avg)}</div></div>
-      <div class="analysis-box"><div class="label">販売組数</div><div class="value">${m.groups}組</div></div>
+      <div class="analysis-box"><div class="label">イベント合計・販売組数</div><div class="value">${m.groups}組</div></div>
       <div class="analysis-box"><div class="label">経費・手数料</div><div class="value">${yen(m.fee)}</div></div>
     </div>
   </div>
   ${compare}
+  <div class="card"><h3>📊 イベント合算</h3><div class="analysis-grid"><div class="analysis-box"><div class="label">全日程の売上</div><div class="value">${yen(m.total)}</div></div><div class="analysis-box"><div class="label">全日程の販売数</div><div class="value">${m.allq}個</div></div><div class="analysis-box"><div class="label">全日程の販売組数</div><div class="value">${m.groups}組</div></div><div class="analysis-box"><div class="label">1組平均</div><div class="value">${yen(m.avg)}</div></div></div></div>
   <div class="card"><h3>🏆 商品販売ランキング</h3><div class="ranklist">${prodRows}</div></div>
-  <div class="card"><h3>📅 日別売上・スタッフ</h3><table><tr><th>日付</th><th>数量</th><th>売上</th><th>組数</th><th>スタッフ</th></tr>${dailyRows}</table></div>
+  <div class="card"><h3>👥 日別スタッフ</h3><div class="notice">保存したスタッフはイベント集計にそのまま反映されます。</div><table><tr><th>日付</th><th>スタッフ</th></tr>${dayList(x).map(d=>`<tr><td>${d}</td><td>${esc(staffForDay(x,d).join('、')||'未登録')}</td></tr>`).join('')}</table></div>
+  <div class="card"><h3>📅 日別売上・スタッフ</h3><p class="muted">ここは日ごとの集計です。上の「販売組数」はイベント全日程の合算です。</p><table><tr><th>日付</th><th>数量</th><th>売上</th><th>組数</th><th>スタッフ</th></tr>${dailyRows}</table></div>
   <div class="card"><h3>⏰ 時間帯別</h3><table><tr><th>時間帯</th><th>数量</th><th>売上</th><th>組数</th></tr>${slotRows}</table></div>
   <div class="card"><h3>💳 支払方法別</h3><table><tr><th>支払方法</th><th>売上</th><th>割合</th></tr>${payRows}</table></div>
   <div class="card"><h3>📦 イベント終了時の在庫</h3><p class="muted">販売数・残在庫を見て、次回イベントの搬入量を考えるための記録です。</p><div class="stocktable"><table class="smalltable"><tr><th>商品</th><th>総搬入</th><th>販売</th><th>ショーケース</th><th>ストッカー</th><th>残在庫</th></tr>${invRows}</table></div></div>
@@ -897,6 +917,7 @@ function settings(x){
   <button class="soft" onclick="addPay()">＋追加</button></div>
   <div class="card"><h3>クラウド同期</h3><p class="muted">ログイン中：${esc(cloudUser?.email||"未ログイン")}</p>${cloudUser?`<button class="soft" onclick="cloudLogout()">ログアウト</button>`:`<p class="muted">ログインすると、この端末の会計データをPC・iPhone・Androidで共有できます。</p>`}</div>
   <div class="card"><h3>データ保護</h3><p class="muted">イベント終了後などにバックアップしてください。</p><button class="soft" onclick="backup()">バックアップ保存</button>
+  <button class="soft" style="margin-top:6px" onclick="diagnoseData()">🔎 データ・在庫を診断</button>
   <label>バックアップ復元</label><input type="file" accept=".json" onchange="restore(this)">
   <div class="dangerbox" style="margin-top:14px"><b>🧹 データ初期化</b><p class="muted">何を消すか選んで初期化できます。クラウド同期中の場合は、選択した内容がPC・iPhone側にも反映されます。</p><button class="bad" style="width:100%" onclick="openResetPanel()">⚠ 初期化メニューを開く</button><div id="resetPanel"></div></div></div>
   <div class="notice">iPhone運用：HTTPSで公開したページをSafariで開き、「共有 → ホーム画面に追加 → Webアプリとして開く」でホーム画面に追加します。</div>`;
@@ -911,8 +932,10 @@ function saveEvent(){
   if(x.eventClosed)return alert("締め済みイベントは設定を変更できません。新しいイベントを作成してください。");
   const st=document.getElementById("start").value,en=document.getElementById("end").value;
   if(!st||!en||en<st)return alert("開催期間を正しく入力してください");
-  Object.assign(x,{name:document.getElementById("ename").value,start:st,end:en,open:document.getElementById("open").value,
-    close:document.getElementById("close").value,slot:Number(document.getElementById("slot").value),
+  const op=document.getElementById("open").value,cl=document.getElementById("close").value;
+  if(!op||!cl||op>=cl)return alert("販売開始・終了時刻を正しく入力してください（終了は開始より後）");
+  Object.assign(x,{name:document.getElementById("ename").value,start:st,end:en,open:op,
+    close:cl,slot:Number(document.getElementById("slot").value),
     feeMode:document.getElementById("feeMode").value,feeTotal:Number(document.getElementById("feeTotal").value)||0});
   x.prices=x.prices||{};db.products.forEach(p=>x.prices[p.id]=x.prices[p.id]??p.price);
   save();db.tab="sale";render();
@@ -934,7 +957,14 @@ function closeEvent(){
 }
 function delEvent(){let x=e();if(!x)return;if(confirm("このイベントの全データを削除しますか？\n会計・在庫・日報もすべて削除されます。")){db.events=db.events.filter(q=>q.id!==x.id);location.hash="";db.tab="events";save();render()}}
 function savePrices(){let x=e();if(!x)return;if(x.eventClosed)return alert("締め済みイベントの価格は変更できません。");x.prices=x.prices||{};db.products.forEach(p=>x.prices[p.id]=Math.max(0,Number(document.getElementById("ep_"+p.id).value)||0));save();render()}
-function saveProduct(id){let p=db.products.find(q=>q.id===id);p.name=document.getElementById("n_"+id).value;p.price=Number(document.getElementById("p_"+id).value)||0;save();render()}
+function saveProduct(id){
+  let p=db.products.find(q=>q.id===id);if(!p)return;
+  const name=(document.getElementById("n_"+id)?.value||"").trim(),price=Number(document.getElementById("p_"+id)?.value);
+  if(!name)return alert("商品名を入力してください。");
+  if(!Number.isFinite(price)||price<0)return alert("価格は0円以上で入力してください。");
+  if(db.products.some(q=>q.id!==id&&String(q.name).trim()===name))return alert("同じ商品名がすでにあります。");
+  p.name=name;p.price=Math.floor(price);save();render();
+}
 function addProduct(){db.products.push({id:"p"+Date.now(),name:"新商品",price:400});save();render()}
 function saveStaff(i){const v=(document.getElementById("s_"+i)?.value||"").trim();if(!v)return alert("スタッフ名を入力してください。");if(db.staff.some((s,j)=>j!==i&&String(s).trim()===v))return alert("同じスタッフ名がすでにあります。");db.staff[i]=v;save();render()}
 function removeStaff(i){if(db.staff.length<=1)return alert("スタッフは最低1名残してください。");if(!confirm(`${db.staff[i]}をスタッフマスターから削除しますか？\n過去日の記録は残ります。`))return;db.staff.splice(i,1);save();render()}
@@ -1026,10 +1056,47 @@ function backup(){
 function restore(i){
   const f=i.files[0];if(!f)return;
   const r=new FileReader();r.onload=()=>{
-    try{db=JSON.parse(r.result);normalizeDb();save();render();alert("復元しました")}
-    catch(_){alert("読み込めないバックアップです")}
+    try{
+      const v=JSON.parse(r.result);
+      if(!v||typeof v!=="object"||!Array.isArray(v.events)||!Array.isArray(v.products))throw new Error("形式不正");
+      if(!confirm("バックアップの内容で現在のデータを上書きします。\n\n現在のデータは失われます。先に現在のバックアップを保存しましたか？"))return;
+      db=v;normalizeDb();save();render();alert("復元しました")
+    }catch(_){alert("読み込めないバックアップです。タルト販売管理から保存したJSONを選択してください。")}
   };r.readAsText(f);
 }
+function diagnoseData(){
+  const issues=[],warnings=[];
+  if(!db||!Array.isArray(db.events))issues.push("イベントデータが壊れています。");
+  const ids=new Set();
+  (db.products||[]).forEach(p=>{
+    if(!p.id)issues.push("商品にIDがありません。");
+    if(ids.has(p.id))issues.push(`商品IDが重複しています：${p.id}`);
+    ids.add(p.id);
+    if(!String(p.name||"").trim())warnings.push(`商品名が空です：${p.id}`);
+  });
+  let txCount=0;
+  (db.events||[]).forEach(ev=>{
+    const m=stockMap(ev);
+    Object.entries(m).forEach(([pid,v])=>{
+      if(v.show<0||v.store<0)issues.push(`${ev.name||"イベント"}：在庫がマイナス（${pid}）`);
+      const expected=v.in+v.add-v.sold;
+      if(expected!==v.remaining)issues.push(`${ev.name||"イベント"}：在庫計算不一致（${pid}：搬入${v.in+v.add}－販売${v.sold}≠残${v.remaining}）`);
+    });
+    (ev.transactions||[]).forEach(t=>{
+      if(t.status!=="void"){
+        txCount++;
+        const calc=(t.items||[]).reduce((a,i)=>a+num(i.qty)*Number(i.price||0),0);
+        if(Math.round(calc)!==Math.round(Number(t.total||0)))issues.push(`${ev.name||"イベント"}：会計${t.groupNo||"?"}の合計金額が明細と不一致`);
+        if(!t.day)warnings.push(`${ev.name||"イベント"}：会計${t.groupNo||"?"}の日付がありません`);
+      }
+    });
+    const days=dayList(ev);
+    Object.keys(ev.closed||{}).forEach(d=>{if(!days.includes(d))warnings.push(`${ev.name||"イベント"}：対象外の日付が締めデータにあります（${d}）`)});
+  });
+  const msg=`データ診断結果\n\n会計件数：${txCount}件\n異常：${issues.length}件\n注意：${warnings.length}件\n\n${issues.length?"【異常】\n・"+issues.join("\n・")+"\n\n":""}${warnings.length?"【注意】\n・"+warnings.join("\n・")+"\n\n":""}${!issues.length&&!warnings.length?"問題は見つかりませんでした。":""}`;
+  alert(msg);
+}
+
 function printDaily(d){
   const x=e(),pm=payTotals(x,d),fee=x.feeMode==="daily"?(x.fees?.[d]||0):0,app=document.getElementById("app"),old=app.innerHTML;
   app.innerHTML=`<div class="printarea"><h1>部門別売上日報（スイーツ工房イベント用）</h1><h2>${esc(x.name)}</h2>
@@ -1049,4 +1116,4 @@ function printSummary(){
 
 if("serviceWorker"in navigator)navigator.serviceWorker.register("./sw.js").catch(()=>{});
 cloudInit();
-</script></script></body></html>
+</script></body></html>
