@@ -271,11 +271,10 @@ const num=v=>Math.max(0,Math.floor(Number(v)||0));
 /* 会計番号を維持 */
 (db.events||[]).forEach(ev=>{
   ev.transactions=ev.transactions||[];
-  const counters={};
+  let n=1;
   ev.transactions.slice().sort((a,b)=>(a.id||0)-(b.id||0)).forEach(t=>{
-    const d=t.day||"unknown";
-    counters[d]=counters[d]||1;
-    t.groupNo=counters[d]++;
+    if(!t.groupNo)t.groupNo=n;
+    n=Math.max(n,(Number(t.groupNo)||0)+1);
   });
   ev.cart=ev.cart||[];
 });
@@ -299,7 +298,7 @@ function selectedDay(x){
 }
 function transactions(x,day=null){return (x?.transactions||[]).filter(t=>t.status!=="void"&&(!day||t.day===day))}
 function allTransactions(x,day=null){return (x?.transactions||[]).filter(t=>!day||t.day===day)}
-function nextGroupNo(x,d){return Math.max(0,...(x.transactions||[]).filter(t=>t.day===d).map(t=>Number(t.groupNo)||0))+1}
+function nextGroupNo(x){return Math.max(0,...(x.transactions||[]).map(t=>Number(t.groupNo)||0))+1}
 function sales(x,day=null){return transactions(x,day).reduce((s,t)=>s+Number(t.total||0),0)}
 function qty(x,pid,day=null){
   return transactions(x,day).reduce((s,t)=>s+(t.items||[]).filter(i=>i.productId===pid).reduce((a,i)=>a+num(i.qty),0),0);
@@ -488,7 +487,7 @@ function sale(x){
   const d=selectedDay(x),sm=stockMap(x),closed=!!x.closed?.[d],eventClosed=!!x.eventClosed;
   return `${x.editTxId?txEditor(x,x.editTxId):""}
   <div class="card"><div class="row" style="justify-content:flex-end;margin-bottom:8px">${undoButton()}</div><div class="grid"><div>${daySelect(x)}</div><div style="text-align:right">
-  <div class="muted">本日の売上</div><div class="big">${yen(sales(x,d))}</div><div class="muted">本日 ${transactions(x,d).length}組</div></div></div></div>
+  <div class="muted">本日の売上</div><div class="big">${yen(sales(x,d))}</div><div class="muted">${transactions(x,d).length}組</div></div></div></div>
   <div class="card"><div class="between"><h3 style="margin:0">かんたん会計</h3><span class="pill">${x.slot||1}時間ごと集計</span></div>
   ${eventClosed?`<div class="dangerbox">このイベントは締め済みです。会計は追加できません。</div>`:`<p class="muted">販売はショーケース在庫から減ります。</p>`}
   <div class="products">${db.products.map(p=>`<div class="prod"><b>${esc(p.name)}</b>
@@ -525,7 +524,7 @@ function historyHTML(x,d){
     <div class="txitems">${(t.items||[]).map(i=>`${esc(i.name)} ×${i.qty}`).join(' ／ ')}</div>
     ${!voided?`<div class="txactions"><button class="soft" onclick="openTx('${t.id}')">編集</button><button class="bad" onclick="voidTx('${t.id}')">この会計を取消</button></div>`
     :`<div class="muted">この会計は売上・販売数から除外されています。</div>`}</div>`;
-  }).join("")}</div><div class="between" style="margin-top:10px"><b>本日の合計</b><b class="big">${yen(sales(x,d))}</b></div><div class="muted">本日の販売組数：${transactions(x,d).length}組</div>`;
+  }).join("")}</div><div class="between" style="margin-top:10px"><b>本日の合計</b><b class="big">${yen(sales(x,d))}</b></div><div class="muted">販売組数：${transactions(x,d).length}組</div>`;
 }
 function txEditor(x,id){
   const t=(x.transactions||[]).find(q=>String(q.id)===String(id));if(!t)return "";
@@ -615,7 +614,7 @@ function cancelCart(){
 
 function createTransaction(x,d,items,pay){
   const now=new Date();
-  const t={id:Date.now()+Math.floor(Math.random()*1000),groupNo:nextGroupNo(x,d),timestamp:now.toISOString(),day:d,
+  const t={id:Date.now()+Math.floor(Math.random()*1000),groupNo:nextGroupNo(x),timestamp:now.toISOString(),day:d,
     items:items.map(i=>({...i})),total:items.reduce((s,i)=>s+i.qty*i.price,0),payment:pay,status:"completed"};
   x.transactions.push(t);return t;
 }
@@ -882,15 +881,14 @@ function summary(x){
       <div class="analysis-box"><div class="label">総販売数</div><div class="value">${m.allq}個</div></div>
       <div class="analysis-box"><div class="label">利益</div><div class="value">${yen(m.profit)}</div></div>
       <div class="analysis-box"><div class="label">1組平均購入額</div><div class="value">${yen(m.avg)}</div></div>
-      <div class="analysis-box"><div class="label">イベント合計・販売組数</div><div class="value">${m.groups}組</div></div>
+      <div class="analysis-box"><div class="label">販売組数</div><div class="value">${m.groups}組</div></div>
       <div class="analysis-box"><div class="label">経費・手数料</div><div class="value">${yen(m.fee)}</div></div>
     </div>
   </div>
   ${compare}
-  <div class="card"><h3>📊 イベント合算</h3><div class="analysis-grid"><div class="analysis-box"><div class="label">全日程の売上</div><div class="value">${yen(m.total)}</div></div><div class="analysis-box"><div class="label">全日程の販売数</div><div class="value">${m.allq}個</div></div><div class="analysis-box"><div class="label">全日程の販売組数</div><div class="value">${m.groups}組</div></div><div class="analysis-box"><div class="label">1組平均</div><div class="value">${yen(m.avg)}</div></div></div></div>
   <div class="card"><h3>🏆 商品販売ランキング</h3><div class="ranklist">${prodRows}</div></div>
   <div class="card"><h3>👥 日別スタッフ</h3><div class="notice">保存したスタッフはイベント集計にそのまま反映されます。</div><table><tr><th>日付</th><th>スタッフ</th></tr>${dayList(x).map(d=>`<tr><td>${d}</td><td>${esc(staffForDay(x,d).join('、')||'未登録')}</td></tr>`).join('')}</table></div>
-  <div class="card"><h3>📅 日別売上・スタッフ</h3><p class="muted">ここは日ごとの集計です。上の「販売組数」はイベント全日程の合算です。</p><table><tr><th>日付</th><th>数量</th><th>売上</th><th>組数</th><th>スタッフ</th></tr>${dailyRows}</table></div>
+  <div class="card"><h3>📅 日別売上・スタッフ</h3><table><tr><th>日付</th><th>数量</th><th>売上</th><th>組数</th><th>スタッフ</th></tr>${dailyRows}</table></div>
   <div class="card"><h3>⏰ 時間帯別</h3><table><tr><th>時間帯</th><th>数量</th><th>売上</th><th>組数</th></tr>${slotRows}</table></div>
   <div class="card"><h3>💳 支払方法別</h3><table><tr><th>支払方法</th><th>売上</th><th>割合</th></tr>${payRows}</table></div>
   <div class="card"><h3>📦 イベント終了時の在庫</h3><p class="muted">販売数・残在庫を見て、次回イベントの搬入量を考えるための記録です。</p><div class="stocktable"><table class="smalltable"><tr><th>商品</th><th>総搬入</th><th>販売</th><th>ショーケース</th><th>ストッカー</th><th>残在庫</th></tr>${invRows}</table></div></div>
