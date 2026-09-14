@@ -180,6 +180,7 @@ function cloudInit(){
       setCloudStatus("☁ クラウド同期中…");
       cloudRef.once("value").then(snap=>{
         const remote=snap.val();
+        let groupChanged=false;
         if(remote){
           db={
             ...db,...remote,
@@ -189,9 +190,11 @@ function cloudInit(){
             payments:Array.isArray(remote.payments)?remote.payments:db.payments
           };
           normalizeDb();
+          groupChanged=normalizeAllGroupNumbers();
         }
         localSave();
         cloudReady=true;
+        if(groupChanged) save();
         setCloudStatus("☁ 同期中："+user.email,"cloudok");
         render();
         if(!remote) cloudRef.set(db).catch(err=>setCloudStatus("⚠ 初回保存エラー："+(err?.message||err),"clouderr"));
@@ -199,8 +202,12 @@ function cloudInit(){
           if(!cloudReady||cloudApplying)return;
           const v=snap2.val(); if(!v)return;
           cloudApplying=true;
-          db=v; normalizeDb(); localSave(); render();
+          db=v; normalizeDb();
+          const groupChanged=normalizeAllGroupNumbers();
+          localSave();
+          render();
           cloudApplying=false;
+          if(groupChanged) save();
           setCloudStatus("☁ 同期中："+user.email,"cloudok");
         });
       }).catch(err=>{
@@ -268,16 +275,31 @@ const yen=n=>"¥"+Math.round(n||0).toLocaleString();
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
 const num=v=>Math.max(0,Math.floor(Number(v)||0));
 
-/* 会計番号を維持 */
-(db.events||[]).forEach(ev=>{
-  ev.transactions=ev.transactions||[];
-  let n=1;
-  ev.transactions.slice().sort((a,b)=>(a.id||0)-(b.id||0)).forEach(t=>{
-    if(!t.groupNo)t.groupNo=n;
-    n=Math.max(n,(Number(t.groupNo)||0)+1);
+/* 会計番号：日ごとに1組目から開始する。
+   既存データも日付ごとに並べ直し、前日の番号を翌日に持ち越さない。 */
+function normalizeGroupNumbersByDay(ev){
+  if(!ev)return false;
+  ev.transactions=Array.isArray(ev.transactions)?ev.transactions:[];
+  let changed=false;
+  const counters={};
+  ev.transactions.slice().sort((a,b)=>{
+    const da=String(a.day||'');
+    const db=String(b.day||'');
+    return da.localeCompare(db)||(Number(a.timestamp?new Date(a.timestamp).getTime():a.id)||0)-(Number(b.timestamp?new Date(b.timestamp).getTime():b.id)||0);
+  }).forEach(t=>{
+    const d=String(t.day||'');
+    counters[d]=(counters[d]||0)+1;
+    if(Number(t.groupNo)!==counters[d]){t.groupNo=counters[d];changed=true;}
   });
   ev.cart=ev.cart||[];
-});
+  return changed;
+}
+function normalizeAllGroupNumbers(){
+  let changed=false;
+  (db.events||[]).forEach(ev=>{if(normalizeGroupNumbersByDay(ev))changed=true;});
+  return changed;
+}
+normalizeAllGroupNumbers();
 
 function jpToday(){
   return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Tokyo",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
@@ -298,7 +320,7 @@ function selectedDay(x){
 }
 function transactions(x,day=null){return (x?.transactions||[]).filter(t=>t.status!=="void"&&(!day||t.day===day))}
 function allTransactions(x,day=null){return (x?.transactions||[]).filter(t=>!day||t.day===day)}
-function nextGroupNo(x){return Math.max(0,...(x.transactions||[]).map(t=>Number(t.groupNo)||0))+1}
+function nextGroupNo(x,d){return Math.max(0,...(x.transactions||[]).filter(t=>t.day===d).map(t=>Number(t.groupNo)||0))+1}
 function sales(x,day=null){return transactions(x,day).reduce((s,t)=>s+Number(t.total||0),0)}
 function qty(x,pid,day=null){
   return transactions(x,day).reduce((s,t)=>s+(t.items||[]).filter(i=>i.productId===pid).reduce((a,i)=>a+num(i.qty),0),0);
@@ -614,7 +636,7 @@ function cancelCart(){
 
 function createTransaction(x,d,items,pay){
   const now=new Date();
-  const t={id:Date.now()+Math.floor(Math.random()*1000),groupNo:nextGroupNo(x),timestamp:now.toISOString(),day:d,
+  const t={id:Date.now()+Math.floor(Math.random()*1000),groupNo:nextGroupNo(x,d),timestamp:now.toISOString(),day:d,
     items:items.map(i=>({...i})),total:items.reduce((s,i)=>s+i.qty*i.price,0),payment:pay,status:"completed"};
   x.transactions.push(t);return t;
 }
@@ -811,7 +833,7 @@ function eventMetrics(x){
     const v=tx.reduce((s,t)=>s+(t.items||[]).filter(i=>i.productId===p.id).reduce((a,i)=>a+num(i.qty)*Number(i.price||0),0),0);
     return {id:p.id,name:p.name,qty:q,sales:v};
   }).sort((a,b)=>b.qty-a.qty);
-  const days=dayList(x).map(d=>({day:d,sales:sales(x,d),qty:tx.filter(t=>t.day===d).reduce((a,t)=>a+(t.items||[]).reduce((b,i)=>b+num(i.qty),0),0),groups:transactions(x,d).length}));
+  const days=dayList(x).map(d=>({day:d,sales:sales(x,d),qty:tx.filter(t=>t.day===d).reduce((a,t)=>a+(t.items||[]).reduce((b,i)=>b+num(i.qty),0),0),groups:transactions(x,d).length,staff:staffForDay(x,d)}));
   const slotData={};
   dayList(x).forEach(d=>{
     const [a,b]=x.open.split(":").map(Number),[c,f]=x.close.split(":").map(Number);
@@ -887,7 +909,6 @@ function summary(x){
   </div>
   ${compare}
   <div class="card"><h3>🏆 商品販売ランキング</h3><div class="ranklist">${prodRows}</div></div>
-  <div class="card"><h3>👥 日別スタッフ</h3><div class="notice">保存したスタッフはイベント集計にそのまま反映されます。</div><table><tr><th>日付</th><th>スタッフ</th></tr>${dayList(x).map(d=>`<tr><td>${d}</td><td>${esc(staffForDay(x,d).join('、')||'未登録')}</td></tr>`).join('')}</table></div>
   <div class="card"><h3>📅 日別売上・スタッフ</h3><table><tr><th>日付</th><th>数量</th><th>売上</th><th>組数</th><th>スタッフ</th></tr>${dailyRows}</table></div>
   <div class="card"><h3>⏰ 時間帯別</h3><table><tr><th>時間帯</th><th>数量</th><th>売上</th><th>組数</th></tr>${slotRows}</table></div>
   <div class="card"><h3>💳 支払方法別</h3><table><tr><th>支払方法</th><th>売上</th><th>割合</th></tr>${payRows}</table></div>
