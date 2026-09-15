@@ -65,7 +65,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 <script src="./firebase-config.js"></script>
 <script>
 /*
-  タルト販売管理 v8.1
+  タルト販売管理 v9.2（現金お釣り計算追加）
   - Firebaseの既存保存先・既存KEYを維持
   - iPhone/PC/Androidの同期方式を変更しない
   - 在庫の物理フローを明確化
@@ -539,7 +539,11 @@ function cartHTML(x){
   <span><button class="mini" onclick="chg('${i.productId}',-1)">−</button> ${i.qty} <button class="mini" onclick="chg('${i.productId}',1)">＋</button></span>
   <b>${yen(i.qty*i.price)}</b></div>`).join("")}</div>
   <div class="between" style="margin-top:10px"><b>合計</b><b class="big">${yen(total)}</b></div>
-  <div class="paygrid" style="margin-top:10px">${db.payments.map(p=>`<button class="${p==='現金'?'good':'primary'}" ${x.eventClosed?'disabled':''} onclick="checkout('${esc(p)}',this)">${esc(p)}で確定</button>`).join("")}</div>
+  <div class="paygrid" style="margin-top:10px">${db.payments.map(p=>p==='現金'
+    ? `<button class="good" ${x.eventClosed?'disabled':''} onclick="cashCheckout(this)">💴 現金会計・お釣り計算</button>`
+    : `<button class="primary" ${x.eventClosed?'disabled':''} onclick="checkout('${esc(p)}',this)">${esc(p)}で確定</button>`
+  ).join("")}</div>
+  <p class="muted" style="margin:7px 0 0">現金の場合は「お預かり金額」を入力すると、お釣りを自動計算できます。</p>
   <button class="bad" style="width:100%;margin-top:8px" onclick="cancelCart()">🗑 カートを全部取り消す</button></div>`;
 }
 function historyHTML(x,d){
@@ -672,15 +676,85 @@ function voidTx(id){
   returnToShowcase(x,t.items||[]);
   t.status="void";t.voidedAt=new Date().toISOString();save();render();toast("会計を取り消しました");
 }
-function checkout(pay,btn){
+function completeCheckout(pay,btn,received=null){
   const x=e(),d=selectedDay(x);
   if(x.eventClosed)return alert("このイベントは締め済みです。");
   if(x.closed?.[d])return alert("この日は締め済みです。");
   if(!x.cart.length)return;
+  const total=x.cart.reduce((s,i)=>s+num(i.qty)*Number(i.price||0),0);
+  if(pay==='現金'){
+    received=Number(received);
+    if(!Number.isFinite(received)||received<total)return alert(`お預かり金額が不足しています。\n合計：${yen(total)}`);
+  }
   const r=consumeForSale(x,x.cart);
   if(!r.ok)return alert(`${r.name}のショーケース在庫が不足しています。\n現在：${r.available}個`);
   pushUndo(x,`まとめ会計を${pay}で確定`);
-  createTransaction(x,d,x.cart,pay);x.cart=[];save();flash(btn,`${pay}で会計を確定しました`);render();
+  createTransaction(x,d,x.cart,pay);
+  x.cart=[];
+  save();
+  const change=pay==='現金'?received-total:null;
+  flash(btn,pay==='現金'?`会計確定　お釣り ${yen(change)}`:`${pay}で会計を確定しました`);
+  render();
+}
+function checkout(pay,btn){
+  completeCheckout(pay,btn);
+}
+function cashCheckout(btn){
+  const x=e();
+  if(!x)return;
+  if(x.eventClosed)return alert("このイベントは締め済みです。");
+  const d=selectedDay(x);
+  if(x.closed?.[d])return alert("この日は締め済みです。");
+  if(!x.cart.length)return;
+  const total=x.cart.reduce((s,i)=>s+num(i.qty)*Number(i.price||0),0);
+  const overlay=document.createElement('div');
+  overlay.id='cashModal';
+  overlay.style.cssText='position:fixed;inset:0;background:#0008;z-index:200;display:flex;align-items:center;justify-content:center;padding:16px';
+  overlay.innerHTML=`<div style="width:min(520px,100%);background:#fff;border-radius:18px;padding:18px;box-shadow:0 12px 40px #0006">
+    <div class="between"><h2 style="margin:0">💴 現金会計</h2><button class="soft" onclick="closeCashModal()">閉じる</button></div>
+    <div class="analysis-box" style="margin-top:12px;text-align:center;background:#f0fdf4;border-color:#bbf7d0">
+      <div class="label">お会計金額</div><div class="big">${yen(total)}</div>
+    </div>
+    <label style="margin-top:14px">お預かり金額</label>
+    <input id="cashReceived" type="number" inputmode="numeric" min="${total}" step="1" placeholder="例：10000" oninput="updateCashChange(${total})" autofocus>
+    <div class="row" style="flex-wrap:wrap;margin-top:8px">
+      ${[1000,2000,5000,10000,20000].map(v=>`<button class="soft" onclick="setCashReceived(${v},${total})">${yen(v)}</button>`).join('')}
+    </div>
+    <div id="cashChange" class="card" style="margin:12px 0 0;text-align:center;background:#f9fafb;border:1px solid #e5e7eb;box-shadow:none">
+      <div class="muted">お釣り</div><div class="big">—</div>
+    </div>
+    <button id="cashConfirm" class="good" style="width:100%;padding:15px;margin-top:10px" disabled onclick="confirmCashCheckout(this)">💴 この金額で会計を確定</button>
+  </div>`;
+  document.body.appendChild(overlay);
+  setTimeout(()=>document.getElementById('cashReceived')?.focus(),50);
+}
+function closeCashModal(){document.getElementById('cashModal')?.remove()}
+function setCashReceived(v,total){
+  const el=document.getElementById('cashReceived');if(!el)return;
+  el.value=v;updateCashChange(total);
+}
+function updateCashChange(total){
+  const input=document.getElementById('cashReceived'),box=document.getElementById('cashChange'),confirmBtn=document.getElementById('cashConfirm');
+  if(!input||!box||!confirmBtn)return;
+  const received=Number(input.value)||0,change=received-total;
+  if(received<total){
+    box.innerHTML=`<div class="muted">お釣り</div><div class="big">—</div><div class="muted">あと ${yen(total-received)} 必要です</div>`;
+    confirmBtn.disabled=true;
+  }else{
+    box.innerHTML=`<div class="muted">お釣り</div><div class="big">${yen(change)}</div><div class="muted">お預かり：${yen(received)}</div>`;
+    confirmBtn.disabled=false;
+  }
+}
+function confirmCashCheckout(btn){
+  const input=document.getElementById('cashReceived');
+  const received=Number(input?.value)||0;
+  const x=e(),d=selectedDay(x);
+  const total=(x.cart||[]).reduce((s,i)=>s+num(i.qty)*Number(i.price||0),0);
+  if(received<total)return updateCashChange(total);
+  const change=received-total;
+  if(!confirm(`合計：${yen(total)}\nお預かり：${yen(received)}\nお釣り：${yen(change)}\n\nこの内容で会計を確定しますか？`))return;
+  closeCashModal();
+  completeCheckout('現金',btn,received);
 }
 function slots(x,d){
   const [a,b]=x.open.split(":").map(Number),[c,f]=x.close.split(":").map(Number);
