@@ -1068,14 +1068,14 @@ function openManualDayPanel(){
   <div class="row" style="margin-top:9px"><button class="primary" onclick="saveManualDay()">手入力実績を保存</button><button class="bad" onclick="clearManualDay(document.getElementById('manualDay').value)">この日の手入力を削除</button><button class="soft" onclick="document.getElementById('manualDayPanel').innerHTML=''">閉じる</button></div></div>`;
 }
 function settings(x){
-  return `<div class="card"><h2>${x?"イベント設定":"新規イベント設定"}</h2><div class="grid">
+  return `<div class="card"><h2>${x?"イベント設定":"新規イベント設定"}</h2>${x?.eventClosed?`<div class="dangerbox" style="margin-bottom:10px"><b>🔒 このイベントは締め済みです</b><p class="muted" style="margin:5px 0 0">締め済みイベントは過去データを守るため、日付・売上・在庫などを変更できません。次回イベントは新規イベントとして作成してください。</p><button class="primary" style="margin-top:8px" onclick="newEvent()">＋ 新しいイベントを作る</button></div>`:""}<div class="grid">
   <div><label>イベント名</label><input id="ename" value="${esc(x?.name||"")}"></div>
   <div><label>時間帯集計</label><select id="slot"><option value="1" ${(x?.slot||1)==1?"selected":""}>1時間ごと</option><option value="2" ${(x?.slot||1)==2?"selected":""}>2時間ごと</option><option value="3" ${(x?.slot||1)==3?"selected":""}>3時間ごと</option></select></div>
   <div><label>開始日</label><input id="start" type="date" value="${x?.start||jpToday()}"></div><div><label>終了日</label><input id="end" type="date" value="${x?.end||jpToday()}"></div>
   <div><label>販売開始</label><input id="open" type="time" value="${x?.open||"10:00"}"></div><div><label>販売終了</label><input id="close" type="time" value="${x?.close||"17:00"}"></div>
   <div><label>経費入力</label><select id="feeMode"><option value="daily" ${x?.feeMode!=="total"?"selected":""}>日ごと</option><option value="total" ${x?.feeMode==="total"?"selected":""}>イベント合算</option></select></div>
   <div><label>合算額</label><input id="feeTotal" type="number" value="${x?.feeTotal||0}"></div></div>
-  <button class="primary" style="margin-top:9px" ${x?.eventClosed?'disabled':''} onclick="saveEvent()">保存</button>${x?` <button class="bad" onclick="delEvent()">イベント削除</button>`:""}${x&&!x.eventClosed?` <button class="warn" style="margin-top:8px" onclick="closeEvent()">🔒 イベントを締める</button>`:x?` <div class="dangerbox" style="margin-top:8px">🔒 このイベントは ${esc(x.closedAt?new Date(x.closedAt).toLocaleString('ja-JP'):'')} に締め済みです。</div>`:""}</div>
+  <button class="primary" style="margin-top:9px" ${x?.eventClosed?'disabled':''} onclick="saveEvent()">保存</button>${x?` <button class="bad" onclick="delEvent()">イベント削除</button>`:""}${x&&!x.eventClosed?` <button class="warn" style="margin-top:8px" onclick="closeEvent()">🔒 イベントを締める</button>`:""}</div>
   ${x?`<div class="card"><h3>イベント価格</h3><p class="muted">変更後の会計から新価格。過去の会計価格は変わりません。</p>
   ${db.products.map(p=>`<div class="row" style="margin:6px 0"><span style="flex:1">${esc(p.name)}</span><input id="ep_${p.id}" type="number" value="${x.prices?.[p.id]??p.price}"></div>`).join("")}
   <button class="soft" onclick="savePrices()">保存</button></div>`:""}
