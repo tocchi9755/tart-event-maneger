@@ -803,7 +803,8 @@ function cashCheckout(btn){
     <label style="margin-top:14px">お預かり金額</label>
     <input id="cashReceived" type="number" inputmode="numeric" min="${total}" step="1" placeholder="例：10000" oninput="updateCashChange(${total})" autofocus>
     <div class="row" style="flex-wrap:wrap;margin-top:8px">
-      ${[1000,2000,5000,10000,20000].map(v=>`<button class="soft" onclick="setCashReceived(${v},${total})">${yen(v)}</button>`).join('')}
+      <button class="primary" onclick="setCashReceived(${total},${total})">💴 ちょうど預かり（${yen(total)}）</button>
+      ${[1000,5000,10000].map(v=>`<button class="soft" onclick="setCashReceived(${v},${total})">${yen(v)}</button>`).join('')}
     </div>
     <div id="cashChange" class="card" style="margin:12px 0 0;text-align:center;background:#f9fafb;border:1px solid #e5e7eb;box-shadow:none">
       <div class="muted">お釣り</div><div class="big">—</div>
@@ -1000,8 +1001,21 @@ function endingInventory(x){
   const m=stockMap(x);
   return db.products.map(p=>({name:p.name,show:m[p.id]?.show||0,store:m[p.id]?.store||0,total:m[p.id]?.remaining||0,sold:m[p.id]?.sold||0,in:m[p.id]?.totalIn||0}));
 }
-function findPreviousEvent(x){
-  const arr=(db.events||[]).filter(q=>q.id!==x.id && q.end<=x.start).sort((a,b)=>String(b.end).localeCompare(String(a.end)));
+function eventNameForYearCompare(name){
+  // 「駅マルシェ2026」と「駅マルシェ2027」のように、年だけ違う同名イベントを比較する。
+  return String(name||'').replace(/20\d{2}/g,'').replace(/19\d{2}/g,'').replace(/[\s　]+/g,'').trim();
+}
+function findPreviousYearEvent(x){
+  const y=Number(String(x.start||'').slice(0,4));
+  if(!y)return null;
+  const targetYear=String(y-1);
+  const key=eventNameForYearCompare(x.name);
+  const arr=(db.events||[]).filter(q=>{
+    if(q.id===x.id)return false;
+    if(String(q.start||'').slice(0,4)!==targetYear)return false;
+    if(q.eventClosed===false)return false;
+    return eventNameForYearCompare(q.name)===key;
+  }).sort((a,b)=>String(b.end||b.start||'').localeCompare(String(a.end||a.start||'')));
   return arr[0]||null;
 }
 function signedDiff(a,b){
@@ -1010,7 +1024,7 @@ function signedDiff(a,b){
 }
 function summary(x){
   if(!x)return "";
-  const m=eventMetrics(x), inv=endingInventory(x), prev=findPreviousEvent(x), pm=m.pay;
+  const m=eventMetrics(x), inv=endingInventory(x), prev=findPreviousYearEvent(x), pm=m.pay;
   const topProducts=m.prod.filter(p=>p.qty>0).slice(0,10);
   const dailyRows=m.days.map(d=>`<tr><td>${d.day}</td><td>${d.qty}個</td><td>${yen(d.sales)}</td><td>${d.groups}組</td><td>${esc((d.staff||[]).join('、')||'未登録')} ${d.source==='manual'?'<span class="pill">手入力実績</span>':d.source==='closed'?'<span class="pill">締め済み</span>':''}</td></tr>`).join("");
   const payRows=Object.entries(pm).sort((a,b)=>b[1]-a[1]).map(([p,v])=>`<tr><td>${esc(p)}</td><td>${yen(v)}</td><td>${m.total?Math.round(v/m.total*100):0}%</td></tr>`).join("");
@@ -1022,17 +1036,17 @@ function summary(x){
     const p=eventMetrics(prev);
     const topNow=m.prod.reduce((best,v)=>v.qty>(best?.qty||-1)?v:best,null);
     const topPrev=p.prod.reduce((best,v)=>v.qty>(best?.qty||-1)?v:best,null);
-    compare=`<div class="card"><div class="between"><h3>前回イベントとの比較</h3><span class="pill">${esc(prev.name)}</span></div>
+    compare=`<div class="card"><div class="between"><h3>前年イベントとの比較</h3><span class="pill">${esc(prev.name)}</span></div>
       <div class="analysis-grid">
-        <div class="analysis-box"><div class="label">売上差</div><div class="value">${yen(m.total-p.total)}</div><div class="muted">今回 ${yen(m.total)} / 前回 ${yen(p.total)}</div></div>
-        <div class="analysis-box"><div class="label">販売数差</div><div class="value">${signedDiff(m.allq,p.allq)}個</div><div class="muted">今回 ${m.allq} / 前回 ${p.allq}</div></div>
-        <div class="analysis-box"><div class="label">1組平均差</div><div class="value">${yen(m.avg-p.avg)}</div><div class="muted">今回 ${yen(m.avg)} / 前回 ${yen(p.avg)}</div></div>
-        <div class="analysis-box"><div class="label">利益差</div><div class="value">${yen(m.profit-p.profit)}</div><div class="muted">今回 ${yen(m.profit)} / 前回 ${yen(p.profit)}</div></div>
+        <div class="analysis-box"><div class="label">売上差</div><div class="value">${yen(m.total-p.total)}</div><div class="muted">今回 ${yen(m.total)} / 前年 ${yen(p.total)}</div></div>
+        <div class="analysis-box"><div class="label">販売数差</div><div class="value">${signedDiff(m.allq,p.allq)}個</div><div class="muted">今回 ${m.allq} / 前年 ${p.allq}</div></div>
+        <div class="analysis-box"><div class="label">1組平均差</div><div class="value">${yen(m.avg-p.avg)}</div><div class="muted">今回 ${yen(m.avg)} / 前年 ${yen(p.avg)}</div></div>
+        <div class="analysis-box"><div class="label">利益差</div><div class="value">${yen(m.profit-p.profit)}</div><div class="muted">今回 ${yen(m.profit)} / 前年 ${yen(p.profit)}</div></div>
       </div>
-      <p style="margin-bottom:0"><b>人気No.1：</b>${topNow?esc(topNow.name)+" "+topNow.qty+"個":"なし"} ／ 前回：${topPrev?esc(topPrev.name)+" "+topPrev.qty+"個":"なし"}</p>
+      <p style="margin-bottom:0"><b>人気No.1：</b>${topNow?esc(topNow.name)+" "+topNow.qty+"個":"なし"} ／ 前年：${topPrev?esc(topPrev.name)+" "+topPrev.qty+"個":"なし"}</p>
     </div>`;
   }else{
-    compare=`<div class="card"><h3>前回イベントとの比較</h3><p class="muted">比較できる終了済みの前イベントがまだありません。次のイベントが終わると、今回との比較ができます。</p></div>`;
+    compare=`<div class="card"><h3>前年イベントとの比較</h3><p class="muted">同じ名称で前年（1年前）のイベントがまだありません。前年の同じイベントが締め済みになると比較できます。</p></div>`;
   }
   return `<div class="card"><div class="between"><h2>イベント振り返り・分析</h2><span class="pill">${x.eventClosed?"イベント締め済み":(x.end<jpToday()?"終了イベント":"開催中/予定")}</span></div>
   ${x.eventClosed?`<div class="dangerbox">🔒 このイベントは締め済みです。過去データはそのまま残ります。</div><div class="row" style="margin-top:8px"><button class="primary" onclick="newEvent()">＋ 次のイベントを作る</button><button class="soft" onclick="location.hash='';db.tab='events';save();render()">イベント一覧へ</button></div>`:`<div class="row" style="margin-bottom:8px"><button class="warn" onclick="closeEvent()">🔒 このイベントを締める</button><button class="primary" onclick="location.hash='';db.tab='events';save();render()">イベント一覧へ</button></div>`}
