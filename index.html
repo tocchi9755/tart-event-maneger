@@ -355,8 +355,17 @@ function saveManualDay(){
   const sumPay=Object.values(pay).reduce((a,b)=>a+b,0);if(sumPay!==salesV)return alert(`支払方法の合計 ${yen(sumPay)} と売上 ${yen(salesV)} が一致していません。`);
   const sumQty=products.reduce((a,v)=>a+v.qty,0);if(sumQty!==qtyV)return alert(`商品別数量の合計 ${sumQty}個 と販売数 ${qtyV}個が一致していません。`);
   const sumProdSales=products.reduce((a,v)=>a+v.sales,0);if(sumProdSales!==salesV)return alert(`商品別売上の合計 ${yen(sumProdSales)} と売上 ${yen(salesV)} が一致していません。`);
-  x.manualDays=x.manualDays||{};x.manualDays[d]={source:"manual",day:d,sales:salesV,qty:qtyV,groups:groupsV,fee:feeV,staff:[...new Set(staff)],pay,products,slotData:{},inventory:{},takeBack:{},waste:{},note:document.getElementById("mdNote")?.value||""};
-  save();render();toast(`${d}の手入力実績を保存しました`);
+  x.manualDays=x.manualDays||{};
+  x.manualDays[d]={source:"manual",day:d,sales:salesV,qty:qtyV,groups:groupsV,fee:feeV,staff:[...new Set(staff)],pay,products,slotData:{},inventory:{},takeBack:{},waste:{},note:document.getElementById("mdNote")?.value||""};
+  // 手入力実績はイベントデータの一部として即時保存する。
+  // 通常のsave()の120ms待ちだけに依存せず、イベントを切り替える直前でも
+  // manualDaysがFirebaseへ確実に書き込まれるようにする。同期方式そのものは変更しない。
+  localSave();
+  if(cloudReady&&cloudRef&&!cloudApplying){
+    clearTimeout(window.__cloudSaveTimer);
+    cloudRef.set(db).catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr"));
+  }
+  render();toast(`${d}の手入力実績をイベントに保存しました`);
 }
 function clearManualDay(d){const x=e();if(!x||!x.manualDays?.[d])return;if(!confirm(`${d}の手入力実績を削除しますか？\n通常の会計データは削除されません。`))return;delete x.manualDays[d];save();render();}
 
