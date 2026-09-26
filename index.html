@@ -305,7 +305,9 @@ function archiveDay(x,d){
   return r;
 }
 function dayData(x,d){
-  if(x?.manualDays?.[d]) return {...clone(x.manualDays[d]),source:"manual",day:d};
+  // 手入力実績は通常の会計履歴とは完全に分離しつつ、
+  // イベント集計では「1日分の実績」として必ず集計する。
+  if(x?.manualDays?.[d]) return manualDayData(x,d);
   if(x?.dayArchives?.[d]) return {...clone(x.dayArchives[d]),source:"closed",day:d};
   return liveDayData(x,d);
 }
@@ -347,25 +349,60 @@ function manualDayData(x,d){
   return {source:"manual",day:d,sales:num(raw.sales),qty:num(raw.qty),groups:num(raw.groups),staff:Array.isArray(raw.staff)?raw.staff:[],fee:num(raw.fee),pm,products,slotData:raw.slotData&&typeof raw.slotData==="object"?raw.slotData:{},inventory:raw.inventory||{},takeBack:raw.takeBack||{},waste:raw.waste||{},note:raw.note||""};
 }
 function saveManualDay(){
-  const x=e();if(!x)return;const d=document.getElementById("manualDay")?.value;if(!d||!dayList(x).includes(d))return alert("イベント期間内の日付を選択してください。");
-  const salesV=num(document.getElementById("mdSales")?.value),qtyV=num(document.getElementById("mdQty")?.value),groupsV=num(document.getElementById("mdGroups")?.value),feeV=num(document.getElementById("mdFee")?.value);
-  const staff=(document.getElementById("mdStaff")?.value||"").split(/[、,\n]/).map(v=>v.trim()).filter(Boolean);
-  const pay={};db.payments.forEach(p=>pay[p]=num(document.getElementById("mdPay_"+encodeURIComponent(p))?.value));
-  const products=db.products.map(p=>({id:p.id,name:p.name,qty:num(document.getElementById("mdQ_"+p.id)?.value),sales:num(document.getElementById("mdS_"+p.id)?.value)}));
-  const sumPay=Object.values(pay).reduce((a,b)=>a+b,0);if(sumPay!==salesV)return alert(`支払方法の合計 ${yen(sumPay)} と売上 ${yen(salesV)} が一致していません。`);
-  const sumQty=products.reduce((a,v)=>a+v.qty,0);if(sumQty!==qtyV)return alert(`商品別数量の合計 ${sumQty}個 と販売数 ${qtyV}個が一致していません。`);
-  const sumProdSales=products.reduce((a,v)=>a+v.sales,0);if(sumProdSales!==salesV)return alert(`商品別売上の合計 ${yen(sumProdSales)} と売上 ${yen(salesV)} が一致していません。`);
-  x.manualDays=x.manualDays||{};
-  x.manualDays[d]={source:"manual",day:d,sales:salesV,qty:qtyV,groups:groupsV,fee:feeV,staff:[...new Set(staff)],pay,products,slotData:{},inventory:{},takeBack:{},waste:{},note:document.getElementById("mdNote")?.value||""};
-  // 手入力実績はイベントデータの一部として即時保存する。
-  // 通常のsave()の120ms待ちだけに依存せず、イベントを切り替える直前でも
-  // manualDaysがFirebaseへ確実に書き込まれるようにする。同期方式そのものは変更しない。
-  localSave();
-  if(cloudReady&&cloudRef&&!cloudApplying){
-    clearTimeout(window.__cloudSaveTimer);
-    cloudRef.set(db).catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr"));
+  const x=e();
+  if(!x)return alert("対象イベントが見つかりません。イベント一覧から対象イベントを開いてください。");
+  try{
+    const d=document.getElementById("manualDay")?.value;
+    if(!d||!dayList(x).includes(d))return alert("イベント期間内の日付を選択してください。");
+
+    const salesV=num(document.getElementById("mdSales")?.value);
+    const qtyV=num(document.getElementById("mdQty")?.value);
+    const groupsV=num(document.getElementById("mdGroups")?.value);
+    const feeV=num(document.getElementById("mdFee")?.value);
+    const staff=(document.getElementById("mdStaff")?.value||"").split(/[、,\n]/).map(v=>v.trim()).filter(Boolean);
+
+    const pay={};
+    db.payments.forEach(p=>pay[p]=num(document.getElementById("mdPay_"+encodeURIComponent(p))?.value));
+
+    const products=db.products.map(p=>({
+      id:p.id,
+      name:p.name,
+      qty:num(document.getElementById("mdQ_"+p.id)?.value),
+      sales:num(document.getElementById("mdS_"+p.id)?.value)
+    }));
+
+    // 保存前に入力内容だけを確認。エラーならデータを書き換えない。
+    const sumPay=Object.values(pay).reduce((a,b)=>a+b,0);
+    if(sumPay!==salesV)return alert(`支払方法の合計 ${yen(sumPay)} と売上 ${yen(salesV)} が一致していません。`);
+    const sumQty=products.reduce((a,v)=>a+v.qty,0);
+    if(sumQty!==qtyV)return alert(`商品別数量の合計 ${sumQty}個 と販売数 ${qtyV}個が一致していません。`);
+    const sumProdSales=products.reduce((a,v)=>a+v.sales,0);
+    if(sumProdSales!==salesV)return alert(`商品別売上の合計 ${yen(sumProdSales)} と売上 ${yen(salesV)} が一致していません。`);
+
+    x.manualDays=x.manualDays||{};
+    x.manualDays[d]={
+      source:"manual",day:d,sales:salesV,qty:qtyV,groups:groupsV,fee:feeV,
+      staff:[...new Set(staff)],pay,products,slotData:{},inventory:{},takeBack:{},waste:{},
+      note:document.getElementById("mdNote")?.value||""
+    };
+
+    // localStorageへ即時保存。Firebaseの保存方式そのものは変更しない。
+    localSave();
+    if(cloudReady&&cloudRef&&!cloudApplying){
+      clearTimeout(window.__cloudSaveTimer);
+      window.__cloudSaveTimer= setTimeout(()=>{
+        cloudRef.set(db).catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr"));
+      },0);
+    }
+
+    // ここで再集計されるので「イベント振り返り・分析」に即反映する。
+    db.tab="summary";
+    render();
+    toast(`${d}の手入力実績を保存しました。イベント集計に反映しました`);
+  }catch(err){
+    console.error("saveManualDay error",err);
+    alert("手入力実績の保存中にエラーが発生しました。\n"+(err?.message||err));
   }
-  render();toast(`${d}の手入力実績をイベントに保存しました`);
 }
 function clearManualDay(d){const x=e();if(!x||!x.manualDays?.[d])return;if(!confirm(`${d}の手入力実績を削除しますか？\n通常の会計データは削除されません。`))return;delete x.manualDays[d];save();render();}
 
