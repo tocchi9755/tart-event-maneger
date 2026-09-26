@@ -1025,13 +1025,28 @@ function closeDay(d){
   pushUndo(x,`${d}を締める`);x.closed=x.closed||{};x.closed[d]=new Date().toISOString();archiveDay(x,d);save();render();toast(`${d}を締めました。締め済みデータを保存しました`);
 }
 
+function eventProductCatalog(x){
+  if(Array.isArray(x?.productCatalog) && x.productCatalog.length) return x.productCatalog;
+  const map=new Map(),order=[];
+  const add=(p)=>{if(!p?.id||map.has(p.id))return;map.set(p.id,{id:p.id,name:p.name||p.id,price:Number(p.price||0)});order.push(p.id)};
+  (x?.transactions||[]).forEach(t=>(t.items||[]).forEach(i=>add({id:i.productId,name:i.name,price:i.price})));
+  (x?.stock||[]).forEach(st=>{const p=db.products.find(q=>q.id===st.productId);add(p||{id:st.productId,name:st.productId,price:x?.prices?.[st.productId]||0});});
+  (x?.manualDays&&Object.values(x.manualDays)).forEach(d=>(d?.products||[]).forEach(i=>add({id:i.id,name:i.name,price:i.price})));
+  return order.map(id=>map.get(id));
+}
+function snapshotEventProducts(x){
+  if(!x)return;
+  x.productCatalog=db.products.map(p=>({id:p.id,name:p.name,price:Number(x.prices?.[p.id]??p.price)}));
+}
+
 function eventMetrics(x){
   const days=dayList(x).map(d=>dayData(x,d));
   const total=days.reduce((a,d)=>a+num(d.sales),0);
   const fee=x.feeMode==="daily"?days.reduce((a,d)=>a+num(d.fee),0):Number(x.feeTotal||0);
   const groups=days.reduce((a,d)=>a+num(d.groups),0),allq=days.reduce((a,d)=>a+num(d.qty),0);
   const pay={};db.payments.forEach(p=>pay[p]=0);days.forEach(d=>Object.entries(d.pm||{}).forEach(([k,v])=>pay[k]=(pay[k]||0)+num(v)));
-  const prodMap={};db.products.forEach(p=>prodMap[p.id]={id:p.id,name:p.name,qty:0,sales:0});
+  const catalog=eventProductCatalog(x);
+  const prodMap={};catalog.forEach(p=>prodMap[p.id]={id:p.id,name:p.name,qty:0,sales:0});
   days.forEach(d=>(d.products||[]).forEach(v=>{if(!prodMap[v.id])prodMap[v.id]={id:v.id,name:v.name||v.id,qty:0,sales:0};prodMap[v.id].qty+=num(v.qty);prodMap[v.id].sales+=num(v.sales);}));
   const prod=Object.values(prodMap).sort((a,b)=>b.qty-a.qty);
   const slotData={};days.forEach(d=>Object.entries(d.slotData||{}).forEach(([k,v])=>{slotData[k]??={qty:0,sales:0,groups:0};slotData[k].qty+=num(v.qty);slotData[k].sales+=num(v.sales);slotData[k].groups+=num(v.groups);}));
@@ -1044,8 +1059,13 @@ function payTotalsAll(x){
   return m;
 }
 function endingInventory(x){
-  const m=stockMap(x);
-  return db.products.map(p=>({name:p.name,show:m[p.id]?.show||0,store:m[p.id]?.store||0,total:m[p.id]?.remaining||0,sold:m[p.id]?.sold||0,in:m[p.id]?.totalIn||0}));
+  const catalog=eventProductCatalog(x),m={};
+  (x.stock||[]).forEach(st=>{m[st.productId]={in:Number(st.in||0)+Number(st.add||0),show:Number(st.show||0),store:Number(st.store||0)};});
+  return catalog.map(p=>{
+    const v=m[p.id]||{in:0,show:0,store:0};
+    const sold=(x.transactions||[]).filter(t=>t.status!=="void").reduce((a,t)=>a+(t.items||[]).filter(i=>i.productId===p.id).reduce((b,i)=>b+Number(i.qty||0),0),0);
+    return {name:p.name,show:v.show,store:v.store,total:v.show+v.store,sold,in:v.in};
+  });
 }
 function eventNameForYearCompare(name){
   // 「駅マルシェ2026」と「駅マルシェ2027」のように、年だけ違う同名イベントを比較する。
@@ -1112,7 +1132,7 @@ function summary(x){
   <div class="card"><h3>⏰ 時間帯別</h3><table><tr><th>時間帯</th><th>数量</th><th>売上</th><th>組数</th></tr>${slotRows}</table></div>
   <div class="card"><h3>💳 支払方法別</h3><table><tr><th>支払方法</th><th>売上</th><th>割合</th></tr>${payRows}</table></div>
   <div class="card"><h3>📦 イベント終了時の在庫</h3><p class="muted">販売数・残在庫を見て、次回イベントの搬入量を考えるための記録です。</p><div class="stocktable"><table class="smalltable"><tr><th>商品</th><th>総搬入</th><th>販売</th><th>ショーケース</th><th>ストッカー</th><th>残在庫</th></tr>${invRows}</table></div></div>
-  <div class="card"><h3>🗑 余り・廃棄・持ち帰り</h3><p class="muted">締め時点の在庫とは別に、会社へ持ち帰った数・廃棄した数を記録できます。在庫から減りますが、売上・販売数には入りません。</p>${db.products.map(p=>{const tb=(x.takeBackByDay||{});let a=0,w=0;Object.values(tb).forEach(v=>a+=num(v?.[p.id]));Object.values(x.wasteByDay||{}).forEach(v=>w+=num(v?.[p.id]));return `<div class="between"><span>${esc(p.name)}</span><span>持帰り ${a}個 ／ 廃棄 ${w}個</span></div>`}).join('')}</div>
+  <div class="card"><h3>🗑 余り・廃棄・持ち帰り</h3><p class="muted">締め時点の在庫とは別に、会社へ持ち帰った数・廃棄した数を記録できます。在庫から減りますが、売上・販売数には入りません。</p>${eventProductCatalog(x).map(p=>{const tb=(x.takeBackByDay||{});let a=0,w=0;Object.values(tb).forEach(v=>a+=num(v?.[p.id]));Object.values(x.wasteByDay||{}).forEach(v=>w+=num(v?.[p.id]));return `<div class="between"><span>${esc(p.name)}</span><span>持帰り ${a}個 ／ 廃棄 ${w}個</span></div>`}).join('')}</div>
   <div class="card"><h3>📋 過去日の実績入力</h3><p class="muted">印刷済みの日報・振り返り資料から、会計履歴を作らずに日別実績だけを復元します。登録後は「手入力実績」と表示され、イベント集計に含まれます。</p><button class="primary" onclick="openManualDayPanel()">過去日の実績を入力</button><div id="manualDayPanel"></div></div>
   <div class="card"><h3>イベント全体集計</h3><button class="soft" onclick="printSummary()">🖨 イベント集計を印刷</button></div>`;
 }
@@ -1182,6 +1202,8 @@ function closeEvent(){
   pushUndo(x,"イベントを締める");
   const now=new Date().toISOString();
   x.closed=x.closed||{};dayList(x).forEach(d=>{if(!x.closed[d])x.closed[d]=now;if(!x.manualDays?.[d]&&!x.dayArchives?.[d])archiveDay(x,d);});
+  // イベントを締めた瞬間の商品名・価格を、このイベント専用の履歴として固定する。
+  snapshotEventProducts(x);
   x.eventClosed=true;x.closedAt=now;
   save();render();toast("イベントを締めました。次のイベントを作成できます");
 }
