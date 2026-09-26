@@ -80,6 +80,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 */
 
 const KEY="toge_tart_manager_final_v2";
+const MANUAL_BACKUP_KEY=KEY+"_manual_backup_v1";
 const base=[
   ["plain","プレーン",400],["double","Wチーズ",400],["choco","チョコレート",400],
   ["has","ハスカップ",400],["sea","シーベリー",400],["blue","ブルーベリー",400],
@@ -101,6 +102,11 @@ function normalizeDb(){
   db.staff=Array.isArray(db.staff)?db.staff:["スタッフ1","スタッフ2"];
   db.payments=Array.isArray(db.payments)&&db.payments.length?db.payments:["現金","PayPay"];
   db.tab=db.tab||"events";
+  db.manualBackups=db.manualBackups&&typeof db.manualBackups==="object"?db.manualBackups:{};
+  db.manualDeleted=db.manualDeleted&&typeof db.manualDeleted==="object"?db.manualDeleted:{};
+  let localManualBackups={};
+  try{localManualBackups=JSON.parse(localStorage.getItem(MANUAL_BACKUP_KEY)||"{}")}catch(e){}
+  Object.assign(db.manualBackups,localManualBackups);
   db.events.forEach(ev=>{
     if(!ev || typeof ev!=="object") return;
     ev.transactions=Array.isArray(ev.transactions)?ev.transactions:[];
@@ -116,6 +122,13 @@ function normalizeDb(){
     ev.addByDay=ev.addByDay&&typeof ev.addByDay==="object"?ev.addByDay:{};
     ev.dayArchives=ev.dayArchives&&typeof ev.dayArchives==="object"?ev.dayArchives:{};
     ev.manualDays=ev.manualDays&&typeof ev.manualDays==="object"?ev.manualDays:{};
+    Object.entries(db.manualBackups).forEach(([k,v])=>{
+      const prefix=ev.id+"__";
+      if(k.startsWith(prefix)){
+        const d=k.slice(prefix.length);
+        if(!db.manualDeleted[k] && !ev.manualDays[d]) ev.manualDays[d]=clone(v);
+      }
+    });
     ev.takeBackByDay=ev.takeBackByDay&&typeof ev.takeBackByDay==="object"?ev.takeBackByDay:{};
     ev.wasteByDay=ev.wasteByDay&&typeof ev.wasteByDay==="object"?ev.wasteByDay:{};
     ev.resetUndoStack=Array.isArray(ev.resetUndoStack)?ev.resetUndoStack:[];
@@ -343,8 +356,15 @@ function editLoss(type,pid){
   pushUndo(x,`${p?.name||"商品"}を${label}${n}個`);x.takeBackByDay=x.takeBackByDay||{};x.wasteByDay=x.wasteByDay||{};x.takeBackByDay[d]=x.takeBackByDay[d]||{};x.wasteByDay[d]=x.wasteByDay[d]||{};
   if(!recordLoss(x,d,pid,n,type))return alert("在庫変更に失敗しました。");save();render();toast(`${p?.name||"商品"} ${n}個を${label}として記録しました`);
 }
+function manualProductList(x,d){
+  const map=new Map();
+  (db.products||[]).forEach(p=>map.set(p.id,{id:p.id,name:p.name,price:Number(p.price||0)}));
+  const old=x?.manualDays?.[d]?.products||[];
+  old.forEach(p=>{if(p?.id&&!map.has(p.id))map.set(p.id,{id:p.id,name:p.name||p.id,price:Number(p.price||0)})});
+  return [...map.values()];
+}
 function manualDayData(x,d){
-  const raw=x.manualDays?.[d]||{};const products=Array.isArray(raw.products)?raw.products:db.products.map(p=>({id:p.id,name:p.name,qty:0,sales:0}));
+  const raw=x.manualDays?.[d]||{};const products=Array.isArray(raw.products)?raw.products:manualProductList(x,d).map(p=>({id:p.id,name:p.name,qty:0,sales:0}));
   const pm={};db.payments.forEach(p=>pm[p]=0);Object.entries(raw.pay||{}).forEach(([k,v])=>pm[k]=num(v));
   return {source:"manual",day:d,sales:num(raw.sales),qty:num(raw.qty),groups:num(raw.groups),staff:Array.isArray(raw.staff)?raw.staff:[],fee:num(raw.fee),pm,products,slotData:raw.slotData&&typeof raw.slotData==="object"?raw.slotData:{},inventory:raw.inventory||{},takeBack:raw.takeBack||{},waste:raw.waste||{},note:raw.note||""};
 }
@@ -364,7 +384,7 @@ function saveManualDay(){
     const pay={};
     db.payments.forEach(p=>pay[p]=num(document.getElementById("mdPay_"+encodeURIComponent(p))?.value));
 
-    const products=db.products.map(p=>({
+    const products=manualProductList(x,d).map(p=>({
       id:p.id,
       name:p.name,
       qty:num(document.getElementById("mdQ_"+p.id)?.value),
@@ -385,6 +405,12 @@ function saveManualDay(){
       staff:[...new Set(staff)],pay,products,slotData:{},inventory:{},takeBack:{},waste:{},
       note:document.getElementById("mdNote")?.value||""
     };
+    db.manualBackups=db.manualBackups||{};
+    db.manualDeleted=db.manualDeleted||{};
+    const manualKey=x.id+"__"+d;
+    db.manualBackups[manualKey]=clone(x.manualDays[d]);
+    delete db.manualDeleted[manualKey];
+    try{localStorage.setItem(MANUAL_BACKUP_KEY,JSON.stringify(db.manualBackups))}catch(e){}
 
     // localStorageへ即時保存。Firebaseの保存方式そのものは変更しない。
     localSave();
@@ -404,7 +430,7 @@ function saveManualDay(){
     alert("手入力実績の保存中にエラーが発生しました。\n"+(err?.message||err));
   }
 }
-function clearManualDay(d){const x=e();if(!x||!x.manualDays?.[d])return;if(!confirm(`${d}の手入力実績を削除しますか？\n通常の会計データは削除されません。`))return;delete x.manualDays[d];save();render();}
+function clearManualDay(d){const x=e();if(!x||!x.manualDays?.[d])return;if(!confirm(`${d}の手入力実績を削除しますか？\n通常の会計データは削除されません。`))return;delete x.manualDays[d];db.manualBackups=db.manualBackups||{};db.manualDeleted=db.manualDeleted||{};const k=x.id+"__"+d;delete db.manualBackups[k];db.manualDeleted[k]=true;try{localStorage.setItem(MANUAL_BACKUP_KEY,JSON.stringify(db.manualBackups))}catch(e){}save();render();}
 
 /* 会計番号：日ごとに1組目から開始する。
    既存データも日付ごとに並べ直し、前日の番号を翌日に持ち越さない。 */
@@ -546,7 +572,7 @@ function undoLastStep(){
   x.staffByDay=JSON.parse(JSON.stringify(u.staffByDay||{}));
   x.dayNotes=JSON.parse(JSON.stringify(u.dayNotes||{}));
   x.addByDay=JSON.parse(JSON.stringify(u.addByDay||{}));
-  x.dayArchives=JSON.parse(JSON.stringify(u.dayArchives||{}));x.manualDays=JSON.parse(JSON.stringify(u.manualDays||{}));x.takeBackByDay=JSON.parse(JSON.stringify(u.takeBackByDay||{}));x.wasteByDay=JSON.parse(JSON.stringify(u.wasteByDay||{}));
+  x.dayArchives=JSON.parse(JSON.stringify(u.dayArchives||{}));if(u.manualDays)x.manualDays=JSON.parse(JSON.stringify(u.manualDays));x.takeBackByDay=JSON.parse(JSON.stringify(u.takeBackByDay||{}));x.wasteByDay=JSON.parse(JSON.stringify(u.wasteByDay||{}));
   x.eventClosed=!!u.eventClosed;
   x.closedAt=u.closedAt||null;
   x.editTxId=null;
@@ -1143,7 +1169,7 @@ function openManualDayPanel(){
   <div class="grid"><div><label>売上</label><input id="mdSales" type="number" value="${num(r.sales)}"></div><div><label>販売数</label><input id="mdQty" type="number" value="${num(r.qty)}"></div><div><label>販売組数</label><input id="mdGroups" type="number" value="${num(r.groups)}"></div><div><label>経費・手数料</label><input id="mdFee" type="number" value="${num(r.fee)}"></div></div>
   <label>スタッフ（「、」区切り）</label><input id="mdStaff" value="${esc((r.staff||[]).join('、'))}" placeholder="例：田中、佐藤">
   <h4>支払方法</h4>${db.payments.map(p=>`<label>${esc(p)}</label><input id="mdPay_${encodeURIComponent(p)}" type="number" value="${num(pay[p])}">`).join('')}
-  <h4>商品別販売数・売上</h4>${db.products.map(p=>{const q=(r.products||[]).find(v=>v.id===p.id)||{};return `<div class="grid"><div><label>${esc(p.name)} 数量</label><input id="mdQ_${p.id}" type="number" value="${num(q.qty)}"></div><div><label>${esc(p.name)} 売上</label><input id="mdS_${p.id}" type="number" value="${num(q.sales)}"></div></div>`}).join('')}
+  <h4>商品別販売数・売上</h4>${manualProductList(x,d).map(p=>{const q=(r.products||[]).find(v=>v.id===p.id)||{};return `<div class="grid"><div><label>${esc(p.name)} 数量</label><input id="mdQ_${p.id}" type="number" value="${num(q.qty)}"></div><div><label>${esc(p.name)} 売上</label><input id="mdS_${p.id}" type="number" value="${num(q.sales)}"></div></div>`}).join('')}
   <label>メモ</label><textarea id="mdNote" rows="2" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:9px">${esc(r.note||'')}</textarea>
   <div class="row" style="margin-top:9px"><button class="primary" onclick="saveManualDay()">手入力実績を保存</button><button class="bad" onclick="clearManualDay(document.getElementById('manualDay').value)">この日の手入力を削除</button><button class="soft" onclick="document.getElementById('manualDayPanel').innerHTML=''">閉じる</button></div></div>`;
 }
@@ -1159,7 +1185,7 @@ function settings(x){
   ${x?`<div class="card"><h3>イベント価格</h3><p class="muted">変更後の会計から新価格。過去の会計価格は変わりません。</p>
   ${db.products.map(p=>`<div class="row" style="margin:6px 0"><span style="flex:1">${esc(p.name)}</span><input id="ep_${p.id}" type="number" value="${x.prices?.[p.id]??p.price}"></div>`).join("")}
   <button class="soft" onclick="savePrices()">保存</button></div>`:""}
-  <div class="card"><h3>商品マスター</h3>${db.products.map(p=>`<div class="row" style="margin:6px 0"><input id="n_${p.id}" value="${esc(p.name)}"><input id="p_${p.id}" type="number" value="${p.price}"><button class="soft" onclick="saveProduct('${p.id}')">保存</button></div>`).join("")}
+  <div class="card"><h3>商品マスター</h3>${db.products.map(p=>`<div class="row" style="margin:6px 0"><input id="n_${p.id}" value="${esc(p.name)}"><input id="p_${p.id}" type="number" value="${p.price}"><button class="soft" onclick="saveProduct('${p.id}')">保存</button><button class="bad" onclick="removeProduct('${p.id}')">削除</button></div>`).join("")}
   <button class="soft" onclick="addProduct()">＋商品追加</button></div>
   <div class="card"><h3>スタッフ</h3>${db.staff.map((s,i)=>`<div class="row" style="margin:6px 0"><input id="s_${i}" value="${esc(s)}"><button class="soft" onclick="saveStaff(${i})">保存</button><button class="bad" onclick="removeStaff(${i})">削除</button></div>`).join("")}
   <button class="soft" onclick="addStaff()">＋追加</button></div>
@@ -1218,6 +1244,18 @@ function saveProduct(id){
   p.name=name;p.price=Math.floor(price);save();render();
 }
 function addProduct(){db.products.push({id:"p"+Date.now(),name:"新商品",price:400});save();render()}
+function removeProduct(id){
+  const p=db.products.find(q=>q.id===id);if(!p)return;
+  const used=[];
+  (db.events||[]).forEach(ev=>{
+    if((ev.transactions||[]).some(t=>(t.items||[]).some(i=>i.productId===id)) || (ev.stock||[]).some(s=>s.productId===id) || Object.values(ev.manualDays||{}).some(d=>(d.products||[]).some(i=>i.id===id))) used.push(ev.name||ev.id);
+  });
+  if(used.length)return alert(`「${p.name}」は過去または現在のイベントで使用されています。\n\n${used.slice(0,5).join("\n")}\n\n履歴を壊さないため、使用中の商品は商品マスターから削除できません。\n今後使わない場合は、商品名を「販売終了」などに変更してください。`);
+  if(!confirm(`商品マスターから「${p.name}」を削除しますか？\nこの商品を使っていないイベントのデータには影響しません。`))return;
+  db.products=db.products.filter(q=>q.id!==id);
+  (db.events||[]).forEach(ev=>{if(ev.prices)delete ev.prices[id]});
+  save();render();toast(`商品「${p.name}」を削除しました`);
+}
 function saveStaff(i){const v=(document.getElementById("s_"+i)?.value||"").trim();if(!v)return alert("スタッフ名を入力してください。");if(db.staff.some((s,j)=>j!==i&&String(s).trim()===v))return alert("同じスタッフ名がすでにあります。");db.staff[i]=v;save();render()}
 function removeStaff(i){if(db.staff.length<=1)return alert("スタッフは最低1名残してください。");if(!confirm(`${db.staff[i]}をスタッフマスターから削除しますか？\n過去日の記録は残ります。`))return;db.staff.splice(i,1);save();render()}
 function addStaff(){db.staff.push("新スタッフ");save();render()}
@@ -1225,7 +1263,7 @@ function savePay(i){const v=(document.getElementById("m_"+i)?.value||"").trim();
 function removePay(i){if(db.payments.length<=1)return alert("支払方法は最低1つ残してください。");if(!confirm(`${db.payments[i]}を削除しますか？\n過去の会計記録は残ります。`))return;db.payments.splice(i,1);save();render()}
 function addPay(){db.payments.push("新しい支払方法");save();render()}
 function defaultDb(){
-  return {events:[],products:base.map(x=>({id:x[0],name:x[1],price:x[2]})),staff:["スタッフ1","スタッフ2"],payments:["現金","PayPay"],tab:"events"};
+  return {events:[],products:base.map(x=>({id:x[0],name:x[1],price:x[2]})),staff:["スタッフ1","スタッフ2"],payments:["現金","PayPay"],manualBackups:{},manualDeleted:{},tab:"events"};
 }
 function resetSnapshotLabel(x){
   if(!x)return "現在のイベント";
