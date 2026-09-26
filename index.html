@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="タルト販売管理">
 <link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>峠のチーズタルト｜イベント販売管理</title>
+<title>峠のチーズタルト｜イベント販売管理 V11</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Noto Sans JP",sans-serif}
 header{background:#111827;color:#fff;padding:14px 14px 12px;position:sticky;top:0;z-index:20}h1{font-size:17px;margin:0 0 3px}.sub{font-size:12px;opacity:.8}
@@ -51,6 +51,8 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 .analysis-box{background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:11px}
 .analysis-box .label{font-size:12px;color:#6b7280}.analysis-box .value{font-size:21px;font-weight:800;margin-top:3px}
 .ranklist{display:flex;flex-direction:column;gap:6px}.rankrow{display:grid;grid-template-columns:28px 1fr auto;gap:7px;align-items:center;padding:8px;border-bottom:1px solid #eee}
+
+.orderlist{display:flex;flex-direction:column;gap:7px}.orderrow{display:grid;grid-template-columns:1fr auto;gap:7px;align-items:center;padding:8px;border:1px solid #e5e7eb;border-radius:10px;background:#fafafa}.orderrow .orderactions{display:flex;gap:4px}.orderactions button{padding:7px 9px;font-size:12px}.tag{display:inline-block;padding:2px 7px;border-radius:99px;background:#eef2ff;color:#4338ca;font-size:11px;font-weight:700}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.settings-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid #eee}.subcard{background:#f8fafc;border:1px solid #e5e7eb;border-radius:12px;padding:10px}.disabled-line{opacity:.55}@media(max-width:520px){.grid3{grid-template-columns:1fr 1fr}.orderrow{grid-template-columns:1fr}.orderrow .orderactions{justify-content:flex-start}}
 .compare-good{font-weight:800}.compare-bad{font-weight:800}.smalltable{font-size:12px}
 @media(max-width:520px){.analysis-grid{grid-template-columns:1fr 1fr}}
 
@@ -67,7 +69,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 <script src="./firebase-config.js"></script>
 <script>
 /*
-  タルト販売管理 v9.2（現金お釣り計算追加）
+  タルト販売管理 v11.0（柔軟な商品・集計・表示設定）
   - Firebaseの既存保存先・既存KEYを維持
   - iPhone/PC/Androidの同期方式を変更しない
   - 在庫の物理フローを明確化
@@ -87,6 +89,18 @@ const base=[
   ["white","白いガトーショコラ",450]
 ];
 
+const APP_SCHEMA_VERSION=11;
+const DEFAULT_VIEW_PREFS={
+  eventListSort:"newest",
+  historySort:"time-asc",
+  inventorySort:"custom",
+  summaryProductSort:"qty-desc",
+  summaryDaySort:"date-asc",
+  summaryPaymentSort:"sales-desc",
+  summarySlotSort:"time-asc",
+  summaryProductLimit:10,
+  summaryShowZero:false
+};
 let db=JSON.parse(localStorage.getItem(KEY)||"null")||{
   events:[],
   products:base.map(x=>({id:x[0],name:x[1],price:x[2]})),
@@ -101,7 +115,8 @@ function normalizeDb(){
   db.products=Array.isArray(db.products)&&db.products.length?db.products:base.map(x=>({id:x[0],name:x[1],price:x[2]}));
   db.staff=Array.isArray(db.staff)?db.staff:["スタッフ1","スタッフ2"];
   db.payments=Array.isArray(db.payments)&&db.payments.length?db.payments:["現金","PayPay"];
-  db.tab=db.tab||"events";
+  db.productOrder=normalizeOrder(db.productOrder,db.products);
+  db.viewPrefs={...DEFAULT_VIEW_PREFS,...(db.viewPrefs||{})};
   db.manualBackups=db.manualBackups&&typeof db.manualBackups==="object"?db.manualBackups:{};
   db.manualDeleted=db.manualDeleted&&typeof db.manualDeleted==="object"?db.manualDeleted:{};
   let localManualBackups={};
@@ -134,19 +149,21 @@ function normalizeDb(){
     ev.resetUndoStack=Array.isArray(ev.resetUndoStack)?ev.resetUndoStack:[];
     ev.eventClosed=!!ev.eventClosed;
     ev.closedAt=ev.closedAt||null;
+    ev.productCatalog=Array.isArray(ev.productCatalog)?ev.productCatalog:null;
+    ev.productOrder=Array.isArray(ev.productOrder)?ev.productOrder:[];
+    ensureEventProductCatalog(ev);
   });
+  // Master order is name-independent: changing a product name never changes its position.
+  db.productOrder=normalizeOrder(db.productOrder,db.products);
 }
 normalizeDb();
-
 let cloudUser=null, cloudReady=false, cloudRef=null, cloudApplying=false;
 const localSave=()=>localStorage.setItem(KEY,JSON.stringify(db));
 const save=()=>{
   localSave();
   if(cloudReady&&cloudRef&&!cloudApplying){
     clearTimeout(window.__cloudSaveTimer);
-    window.__cloudSaveTimer=setTimeout(
-      ()=>cloudRef.set(db).catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr")),120
-    );
+    window.__cloudSaveTimer=setTimeout(()=>cloudRef.set(db).catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr")),120);
   }
 };
 function setCloudStatus(msg,cls=""){
@@ -295,9 +312,104 @@ const yen=n=>"¥"+Math.round(n||0).toLocaleString();
 const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
 const num=v=>Math.max(0,Math.floor(Number(v)||0));
 const clone=v=>JSON.parse(JSON.stringify(v));
+function ensureViewPrefs(){db.viewPrefs={...DEFAULT_VIEW_PREFS,...(db.viewPrefs||{})};return db.viewPrefs;}
+function normalizeOrder(order,items){
+  const ids=items.map(x=>x.id).filter(Boolean),seen=new Set(),out=[];
+  (Array.isArray(order)?order:[]).forEach(id=>{if(ids.includes(id)&&!seen.has(id)){seen.add(id);out.push(id);}});
+  ids.forEach(id=>{if(!seen.has(id)){seen.add(id);out.push(id);}});
+  return out;
+}
+function orderedById(items,order){
+  const map=new Map(items.map(x=>[x.id,x]));
+  return normalizeOrder(order,items).map(id=>map.get(id)).filter(Boolean);
+}
+function orderedMasterProducts(){
+  db.productOrder=normalizeOrder(db.productOrder,db.products||[]);
+  return orderedById(db.products||[],db.productOrder);
+}
+function eventProducts(x,includeInactive=false){
+  if(!x)return [];
+  ensureEventProductCatalog(x);
+  const arr=(x.productCatalog||[]).filter(p=>includeInactive||p.active!==false);
+  x.productOrder=normalizeOrder(x.productOrder,arr);
+  return orderedById(arr,x.productOrder);
+}
+function eventProductById(x,pid){return eventProducts(x,true).find(p=>p.id===pid)||null;}
+function ensureEventProductCatalog(x){
+  if(!x)return false;
+  let changed=false;
+  const observed=new Map();
+  (x.transactions||[]).forEach(t=>(t.items||[]).forEach(i=>{
+    if(i?.productId&&!observed.has(i.productId)) observed.set(i.productId,{id:i.productId,name:i.name,price:i.price});
+  }));
+  (x.manualDays&&Object.values(x.manualDays)||[]).forEach(d=>(d?.products||[]).forEach(i=>{
+    if(i?.id&&!observed.has(i.id)) observed.set(i.id,{id:i.id,name:i.name,price:i.price});
+  }));
+  const stockIds=(x.stock||[]).map(s=>s.productId).filter(Boolean);
+  const masters=new Map((db.products||[]).map(p=>[p.id,p]));
+  const ids=new Set([...Object.keys(x.prices||{}),...observed.keys(),...stockIds]);
+
+  // 新しいイベント／旧データ移行時だけカタログを生成。
+  // 一度カタログが存在した後は、配列や既存オブジェクトを作り直さず、
+  // 「eventProducts()を何度呼んでも編集中の商品名・価格が勝手に戻る」ことを防ぐ。
+  if(!Array.isArray(x.productCatalog)){
+    const map=new Map();
+    const add=p=>{if(!p?.id||map.has(p.id))return;map.set(p.id,{id:p.id,name:String(p.name||p.id),price:Number(p.price??0),active:p.active!==false});};
+    ids.forEach(id=>{
+      const o=observed.get(id),m=masters.get(id),price=Number(x.prices?.[id]??o?.price??m?.price??0);
+      add(o||m||{id,name:id,price});
+      const q=map.get(id); if(q) q.price=price;
+    });
+    if(!map.size){
+      orderedMasterProducts().forEach(p=>add(p));
+    }
+    x.productCatalog=[...map.values()];
+    x.productOrder=normalizeOrder(x.productOrder,x.productCatalog);
+    return true;
+  }
+
+  // 既存カタログは「そのイベントの正史」。名前・価格をマスターで上書きしない。
+  const seen=new Set();
+  x.productCatalog.forEach(p=>{
+    if(!p?.id)return;
+    seen.add(p.id);
+    if(typeof p.name!=='string'||!p.name.trim()){p.name=p.id;changed=true;}
+    if(!Number.isFinite(Number(p.price))){p.price=0;changed=true;}else{p.price=Math.max(0,Number(p.price));}
+    p.active=p.active!==false;
+  });
+  ids.forEach(id=>{
+    if(seen.has(id))return;
+    const o=observed.get(id),m=masters.get(id),price=Number(x.prices?.[id]??o?.price??m?.price??0);
+    x.productCatalog.push({id,name:String(o?.name||m?.name||id),price,active:true});
+    changed=true;
+  });
+  const oldOrder=JSON.stringify(x.productOrder||[]);
+  x.productOrder=normalizeOrder(x.productOrder,x.productCatalog);
+  if(oldOrder!==JSON.stringify(x.productOrder))changed=true;
+  return changed;
+}
+function orderedStaff(){ return (db.staff||[]).slice(); }
+function orderedPayments(){ return (db.payments||[]).slice(); }
+function paymentListForEvent(x){
+  const master=orderedPayments(), seen=new Set(master), extra=[];
+  (x?.transactions||[]).forEach(t=>{const p=String(t.payment||"");if(p&&!seen.has(p)){seen.add(p);extra.push(p)}});
+  Object.values(x?.manualDays||{}).forEach(d=>Object.keys(d?.pay||{}).forEach(p=>{if(p&&!seen.has(p)){seen.add(p);extra.push(p)}}));
+  return [...master,...extra];
+}
+function setViewPref(k,v){ensureViewPrefs();db.viewPrefs[k]=v;save();render();}
+function moveArrayItem(arr,index,dir){const j=index+dir;if(!Array.isArray(arr)||index<0||j<0||j>=arr.length)return false;[arr[index],arr[j]]=[arr[j],arr[index]];return true;}
+function moveMasterProduct(id,dir){const arr=orderedMasterProducts().map(p=>p.id),i=arr.indexOf(id);if(i<0||!moveArrayItem(arr,i,dir))return;db.productOrder=arr;save();render();}
+function moveStaff(i,dir){const arr=Array.from({length:db.staff.length},(_,n)=>n),j=i+dir;if(j<0||j>=arr.length)return;[db.staff[i],db.staff[j]]=[db.staff[j],db.staff[i]];save();render();}
+function movePayment(i,dir){const arr=Array.from({length:db.payments.length},(_,n)=>n),j=i+dir;if(j<0||j>=arr.length)return;[db.payments[i],db.payments[j]]=[db.payments[j],db.payments[i]];save();render();}
+function moveEventProduct(id,dir){const x=e();if(!x||x.eventClosed)return;const arr=eventProducts(x,true).map(p=>p.id),i=arr.indexOf(id);if(i<0||!moveArrayItem(arr,i,dir))return;x.productOrder=arr;save();render();}
+function sortFor(pref,arr){const a=arr.slice();
+  if(pref==="name-asc")return a.sort((x,y)=>String(x.name||x[0]||"").localeCompare(String(y.name||y[0]||""),"ja"));
+  if(pref==="name-desc")return a.sort((x,y)=>String(y.name||y[0]||"").localeCompare(String(x.name||x[0]||""),"ja"));
+  return a;
+}
 function liveDayData(x,d){
   const tx=transactions(x,d), pm=payTotals(x,d), fee=x.feeMode==="daily"?Number(x.fees?.[d]||0):0;
-  const products=db.products.map(p=>{
+  const products=eventProducts(x).map(p=>{
     const items=tx.flatMap(t=>t.items||[]).filter(i=>i.productId===p.id);
     return {id:p.id,name:p.name,qty:items.reduce((a,i)=>a+num(i.qty),0),sales:items.reduce((a,i)=>a+num(i.qty)*Number(i.price||0),0)};
   });
@@ -325,7 +437,7 @@ function dayData(x,d){
   return liveDayData(x,d);
 }
 function resetSnapshot(x,label){
-  return {label,timestamp:new Date().toISOString(),transactions:clone(x.transactions||[]),cart:clone(x.cart||[]),stock:clone(x.stock||[]),stockMoves:clone(x.stockMoves||[]),fees:clone(x.fees||{}),closed:clone(x.closed||{}),staffByDay:clone(x.staffByDay||{}),dayNotes:clone(x.dayNotes||{}),addByDay:clone(x.addByDay||{}),dayArchives:clone(x.dayArchives||{}),manualDays:clone(x.manualDays||{}),takeBackByDay:clone(x.takeBackByDay||{}),wasteByDay:clone(x.wasteByDay||{}),eventClosed:!!x.eventClosed,closedAt:x.closedAt||null,dayArchives:clone(x.dayArchives||{}),manualDays:clone(x.manualDays||{}),takeBackByDay:clone(x.takeBackByDay||{}),wasteByDay:clone(x.wasteByDay||{})};
+  return {label,timestamp:new Date().toISOString(),transactions:clone(x.transactions||[]),cart:clone(x.cart||[]),stock:clone(x.stock||[]),stockMoves:clone(x.stockMoves||[]),fees:clone(x.fees||{}),closed:clone(x.closed||{}),staffByDay:clone(x.staffByDay||{}),dayNotes:clone(x.dayNotes||{}),addByDay:clone(x.addByDay||{}),dayArchives:clone(x.dayArchives||{}),manualDays:clone(x.manualDays||{}),takeBackByDay:clone(x.takeBackByDay||{}),wasteByDay:clone(x.wasteByDay||{}),productCatalog:clone(x.productCatalog||[]),productOrder:clone(x.productOrder||[]),prices:clone(x.prices||{}),eventClosed:!!x.eventClosed,closedAt:x.closedAt||null};
 }
 function pushResetUndo(x,label){
   x.resetUndoStack=Array.isArray(x.resetUndoStack)?x.resetUndoStack:[];
@@ -335,7 +447,7 @@ function pushResetUndo(x,label){
 function undoReset(){
   const x=e();if(!x)return;
   const u=x.resetUndoStack?.pop();if(!u)return alert("初期化を戻せる記録がありません。");
-  Object.assign(x,{transactions:clone(u.transactions||[]),cart:clone(u.cart||[]),stock:clone(u.stock||[]),stockMoves:clone(u.stockMoves||[]),fees:clone(u.fees||{}),closed:clone(u.closed||{}),staffByDay:clone(u.staffByDay||{}),dayNotes:clone(u.dayNotes||{}),addByDay:clone(u.addByDay||{}),dayArchives:clone(u.dayArchives||{}),manualDays:clone(u.manualDays||{}),takeBackByDay:clone(u.takeBackByDay||{}),wasteByDay:clone(u.wasteByDay||{}),eventClosed:!!u.eventClosed,closedAt:u.closedAt||null,editTxId:null});
+  Object.assign(x,{transactions:clone(u.transactions||[]),cart:clone(u.cart||[]),stock:clone(u.stock||[]),stockMoves:clone(u.stockMoves||[]),fees:clone(u.fees||{}),closed:clone(u.closed||{}),staffByDay:clone(u.staffByDay||{}),dayNotes:clone(u.dayNotes||{}),addByDay:clone(u.addByDay||{}),dayArchives:clone(u.dayArchives||{}),manualDays:clone(u.manualDays||{}),takeBackByDay:clone(u.takeBackByDay||{}),wasteByDay:clone(u.wasteByDay||{}),productCatalog:clone(u.productCatalog||x.productCatalog||[]),productOrder:clone(u.productOrder||x.productOrder||[]),prices:clone(u.prices||x.prices||{}),eventClosed:!!u.eventClosed,closedAt:u.closedAt||null,editTxId:null});
   save();render();toast("初期化前の状態に戻しました");
 }
 function recordLoss(x,d,pid,n,type){
@@ -349,7 +461,7 @@ function recordLoss(x,d,pid,n,type){
 }
 function editLoss(type,pid){
   const x=e(),d=selectedDay(x);if(!x||x.eventClosed||x.closed?.[d])return alert("締め済みの日・イベントでは変更できません。");
-  const p=db.products.find(q=>q.id===pid),m=stockMap(x),max=m[pid]?.remaining||0;
+  const p=eventProductById(x,pid),m=stockMap(x),max=m[pid]?.remaining||0;
   const label=type==="takeback"?"会社へ持ち帰る":"廃棄する";
   const v=prompt(`${p?.name||"商品"}を${label}何個にしますか？\n現在の会場在庫：${max}個`,String(Math.min(10,max)));
   if(v===null)return;const n=num(v);if(n<1)return;if(n>max)return alert(`会場在庫は${max}個です。`);
@@ -357,15 +469,15 @@ function editLoss(type,pid){
   if(!recordLoss(x,d,pid,n,type))return alert("在庫変更に失敗しました。");save();render();toast(`${p?.name||"商品"} ${n}個を${label}として記録しました`);
 }
 function manualProductList(x,d){
-  const map=new Map();
-  (db.products||[]).forEach(p=>map.set(p.id,{id:p.id,name:p.name,price:Number(p.price||0)}));
-  const old=x?.manualDays?.[d]?.products||[];
-  old.forEach(p=>{if(p?.id&&!map.has(p.id))map.set(p.id,{id:p.id,name:p.name||p.id,price:Number(p.price||0)})});
-  return [...map.values()];
+  const raw=x?.manualDays?.[d]?.products||[];
+  const arr=eventProducts(x,true),map=new Map(arr.map(p=>[p.id,{id:p.id,name:p.name,price:Number(p.price||0)}]));
+  raw.forEach(p=>{if(p?.id&&!map.has(p.id))map.set(p.id,{id:p.id,name:p.name||p.id,price:Number(p.price||0)})});
+  const order=normalizeOrder(x?.productOrder,[...map.values()]);
+  return orderedById([...map.values()],order);
 }
 function manualDayData(x,d){
   const raw=x.manualDays?.[d]||{};const products=Array.isArray(raw.products)?raw.products:manualProductList(x,d).map(p=>({id:p.id,name:p.name,qty:0,sales:0}));
-  const pm={};db.payments.forEach(p=>pm[p]=0);Object.entries(raw.pay||{}).forEach(([k,v])=>pm[k]=num(v));
+  const pm={};paymentListForEvent(x).forEach(p=>pm[p]=0);Object.entries(raw.pay||{}).forEach(([k,v])=>pm[k]=num(v));
   return {source:"manual",day:d,sales:num(raw.sales),qty:num(raw.qty),groups:num(raw.groups),staff:Array.isArray(raw.staff)?raw.staff:[],fee:num(raw.fee),pm,products,slotData:raw.slotData&&typeof raw.slotData==="object"?raw.slotData:{},inventory:raw.inventory||{},takeBack:raw.takeBack||{},waste:raw.waste||{},note:raw.note||""};
 }
 function saveManualDay(){
@@ -382,7 +494,7 @@ function saveManualDay(){
     const staff=(document.getElementById("mdStaff")?.value||"").split(/[、,\n]/).map(v=>v.trim()).filter(Boolean);
 
     const pay={};
-    db.payments.forEach(p=>pay[p]=num(document.getElementById("mdPay_"+encodeURIComponent(p))?.value));
+    paymentListForEvent(x).forEach(p=>pay[p]=num(document.getElementById("mdPay_"+encodeURIComponent(p))?.value));
 
     const products=manualProductList(x,d).map(p=>({
       id:p.id,
@@ -492,30 +604,23 @@ function qty(x,pid,day=null){
 /* 在庫の基本状態 */
 function stockMap(x){
   const m={};
-  db.products.forEach(p=>m[p.id]={in:0,add:0,show:0,store:0});
+  eventProducts(x,true).forEach(p=>m[p.id]={in:0,add:0,show:0,store:0});
   (x?.stock||[]).forEach(s=>{
-    if(m[s.productId]){
-      m[s.productId].in=num(s.in);m[s.productId].add=num(s.add);
-      m[s.productId].show=num(s.show);m[s.productId].store=num(s.store);
-    }
+    if(!m[s.productId])m[s.productId]={in:0,add:0,show:0,store:0};
+    m[s.productId].in=num(s.in);m[s.productId].add=num(s.add);m[s.productId].show=num(s.show);m[s.productId].store=num(s.store);
   });
-  db.products.forEach(p=>{
+  eventProducts(x,true).forEach(p=>{
     const sold=qty(x,p.id);
-    m[p.id].sold=sold;
-    m[p.id].remaining=m[p.id].show+m[p.id].store;
-    m[p.id].totalIn=m[p.id].in+m[p.id].add;
+    m[p.id].sold=sold;m[p.id].remaining=m[p.id].show+m[p.id].store;m[p.id].totalIn=m[p.id].in+m[p.id].add;
   });
   return m;
 }
+
 function ensureStock(x,pid){
-  x.stock=x.stock||[];
-  let s=x.stock.find(q=>q.productId===pid);
-  if(!s){
-    s={productId:pid,in:0,add:0,show:0,store:0};
-    x.stock.push(s);
-  }
-  return s;
+  x.stock=x.stock||[];let s=x.stock.find(q=>q.productId===pid);
+  if(!s){s={productId:pid,in:0,add:0,show:0,store:0};x.stock.push(s);} return s;
 }
+
 function stockTotals(x,pid){
   const s=stockMap(x)[pid]||{show:0,store:0,in:0,add:0};
   return {show:s.show,store:s.store,total:s.show+s.store};
@@ -531,18 +636,9 @@ function consumeForSale(x,items){
   const m=stockMap(x);
   for(const i of items){
     const total=(m[i.productId]?.show||0)+(m[i.productId]?.store||0);
-    if(total<num(i.qty)){
-      const p=db.products.find(q=>q.id===i.productId);
-      return {ok:false,name:p?.name||i.name,available:total,need:num(i.qty)};
-    }
+    if(total<num(i.qty)){const p=eventProductById(x,i.productId);return {ok:false,name:p?.name||i.name,available:total,need:num(i.qty)};}
   }
-  for(const i of items){
-    const s=ensureStock(x,i.productId),n=num(i.qty);
-    const fromShow=Math.min(num(s.show),n);
-    s.show-=fromShow;
-    const remain=n-fromShow;
-    if(remain>0)s.store-=remain;
-  }
+  for(const i of items){const s=ensureStock(x,i.productId),n=num(i.qty),fromShow=Math.min(num(s.show),n);s.show-=fromShow;const remain=n-fromShow;if(remain>0)s.store-=remain;}
   return {ok:true};
 }
 function returnToShowcase(x,items){
@@ -553,30 +649,14 @@ function returnToShowcase(x,items){
    Firebaseへ一緒に保存するため、PCとiPhoneの間でもUndo状態を共有する。 */
 function pushUndo(x,label){
   x.undoStack=Array.isArray(x.undoStack)?x.undoStack:[];
-  const snap={label,timestamp:new Date().toISOString(),stock:JSON.parse(JSON.stringify(x.stock||[])),stockMoves:JSON.parse(JSON.stringify(x.stockMoves||[])),transactions:JSON.parse(JSON.stringify(x.transactions||[])),cart:JSON.parse(JSON.stringify(x.cart||[])),fees:JSON.parse(JSON.stringify(x.fees||{})),closed:JSON.parse(JSON.stringify(x.closed||{})),staffByDay:JSON.parse(JSON.stringify(x.staffByDay||{})),dayNotes:JSON.parse(JSON.stringify(x.dayNotes||{})),addByDay:JSON.parse(JSON.stringify(x.addByDay||{})),eventClosed:!!x.eventClosed,closedAt:x.closedAt||null};
-  x.undoStack.push(snap);
-  if(x.undoStack.length>20)x.undoStack.shift();
+  const snap={label,timestamp:new Date().toISOString(),stock:clone(x.stock||[]),stockMoves:clone(x.stockMoves||[]),transactions:clone(x.transactions||[]),cart:clone(x.cart||[]),fees:clone(x.fees||{}),closed:clone(x.closed||{}),staffByDay:clone(x.staffByDay||{}),dayNotes:clone(x.dayNotes||{}),addByDay:clone(x.addByDay||{}),dayArchives:clone(x.dayArchives||{}),manualDays:clone(x.manualDays||{}),takeBackByDay:clone(x.takeBackByDay||{}),wasteByDay:clone(x.wasteByDay||{}),productCatalog:clone(x.productCatalog||[]),productOrder:clone(x.productOrder||[]),prices:clone(x.prices||{}),eventClosed:!!x.eventClosed,closedAt:x.closedAt||null,editTxId:x.editTxId||null};
+  x.undoStack.push(snap);if(x.undoStack.length>20)x.undoStack.shift();
 }
 function undoLastStep(){
-  const x=e(); if(!x)return;
-  if(x.eventClosed)return alert("締め済みイベントは元に戻せません。バックアップからの復元を利用してください。");
-  x.undoStack=Array.isArray(x.undoStack)?x.undoStack:[];
-  const u=x.undoStack.pop();
-  if(!u)return alert("戻せる操作がありません。");
-  x.stock=JSON.parse(JSON.stringify(u.stock||[]));
-  x.stockMoves=JSON.parse(JSON.stringify(u.stockMoves||[]));
-  x.transactions=JSON.parse(JSON.stringify(u.transactions||[]));
-  x.cart=JSON.parse(JSON.stringify(u.cart||[]));
-  x.fees=JSON.parse(JSON.stringify(u.fees||{}));
-  x.closed=JSON.parse(JSON.stringify(u.closed||{}));
-  x.staffByDay=JSON.parse(JSON.stringify(u.staffByDay||{}));
-  x.dayNotes=JSON.parse(JSON.stringify(u.dayNotes||{}));
-  x.addByDay=JSON.parse(JSON.stringify(u.addByDay||{}));
-  x.dayArchives=JSON.parse(JSON.stringify(u.dayArchives||{}));if(u.manualDays)x.manualDays=JSON.parse(JSON.stringify(u.manualDays));x.takeBackByDay=JSON.parse(JSON.stringify(u.takeBackByDay||{}));x.wasteByDay=JSON.parse(JSON.stringify(u.wasteByDay||{}));
-  x.eventClosed=!!u.eventClosed;
-  x.closedAt=u.closedAt||null;
-  x.editTxId=null;
-  save(); render(); toast("1手順前に戻しました："+(u.label||"直前の操作"));
+  const x=e();if(!x)return;if(x.eventClosed)return alert("締め済みイベントは元に戻せません。バックアップからの復元を利用してください。");
+  x.undoStack=Array.isArray(x.undoStack)?x.undoStack:[];const u=x.undoStack.pop();if(!u)return alert("戻せる操作がありません。");
+  Object.assign(x,{stock:clone(u.stock||[]),stockMoves:clone(u.stockMoves||[]),transactions:clone(u.transactions||[]),cart:clone(u.cart||[]),fees:clone(u.fees||{}),closed:clone(u.closed||{}),staffByDay:clone(u.staffByDay||{}),dayNotes:clone(u.dayNotes||{}),addByDay:clone(u.addByDay||{}),dayArchives:clone(u.dayArchives||{}),manualDays:clone(u.manualDays||{}),takeBackByDay:clone(u.takeBackByDay||{}),wasteByDay:clone(u.wasteByDay||{}),productCatalog:clone(u.productCatalog||x.productCatalog||[]),productOrder:clone(u.productOrder||x.productOrder||[]),prices:clone(u.prices||x.prices||{}),eventClosed:!!u.eventClosed,closedAt:u.closedAt||null,editTxId:null});
+  save();render();toast("1手順前に戻しました："+(u.label||"直前の操作"));
 }
 function undoButton(){
   const x=e(),n=x?.undoStack?.length||0;
@@ -587,7 +667,7 @@ function undoButton(){
 function transferToShow(pid){
   const x=e(); if(!x)return;
   if(x.eventClosed)return alert("締め済みイベントは在庫を変更できません。");
-  const s=ensureStock(x,pid),p=db.products.find(q=>q.id===pid);
+  const s=ensureStock(x,pid),p=eventProductById(x,pid);
   const max=s.store;
   if(max<1)return alert(`${p?.name||"商品"}のストッカー在庫がありません。`);
   const v=prompt(`${p?.name||"商品"}をストッカーからショーケースへ何個移動しますか？\n現在のストッカー：${max}個`,String(Math.min(10,max)));
@@ -604,7 +684,7 @@ function transferToShow(pid){
 function transferToStock(pid){
   const x=e(); if(!x)return;
   if(x.eventClosed)return alert("締め済みイベントは在庫を変更できません。");
-  const s=ensureStock(x,pid),p=db.products.find(q=>q.id===pid);
+  const s=ensureStock(x,pid),p=eventProductById(x,pid);
   const max=s.show;
   if(max<1)return alert(`${p?.name||"商品"}のショーケース在庫がありません。`);
   const v=prompt(`${p?.name||"商品"}をショーケースからストッカーへ何個戻しますか？\n現在のショーケース：${max}個`,String(Math.min(10,max)));
@@ -630,27 +710,20 @@ function render(){
   document.getElementById("app").innerHTML=f(x)||"";
 }
 function events(){
-  const cards=(db.events||[]).map(x=>{
-    const em=eventMetrics(x),total=em.total,fee=em.fee,allq=em.allq;
-    const ended=x.end < jpToday();
-    const status=x.eventClosed?"・締め済み":(ended?"・終了":"・開催前/開催中");
-    return `<div class="card" style="margin:7px 0">
-      <div class="between">
-        <div><b>${esc(x.name)}</b><div class="muted">${x.start} ～ ${x.end} ${status}</div></div>
-        <button class="primary" onclick="location.hash='${x.id}';db.tab='sale';render()">開く</button>
-      </div>
-      <div class="analysis-grid" style="margin-top:9px">
-        <div class="analysis-box"><div class="label">売上</div><div class="value">${yen(total)}</div></div>
-        <div class="analysis-box"><div class="label">販売数</div><div class="value">${allq}個</div></div>
-        <div class="analysis-box"><div class="label">利益</div><div class="value">${yen(total-fee)}</div></div>
-        <div class="analysis-box"><div class="label">1組平均</div><div class="value">${em.groups?yen(total/em.groups):"¥0"}</div></div>
-      </div>
-      <button class="soft" style="width:100%;margin-top:8px" onclick="location.hash='${x.id}';db.tab='summary';render()">📊 振り返り・分析を見る</button>
-    </div>`;
-  }).join("");
-  return `<div class="card"><h2>イベント一覧</h2>${cards||`<p class="muted">まだイベントがありません。</p>`}</div>
-    <div class="card"><button class="primary" onclick="newEvent()">＋新しいイベントを作る</button></div>`;
+  const pref=ensureViewPrefs().eventListSort;
+  const arr=(db.events||[]).slice().sort((a,b)=>{
+    if(pref==="oldest")return String(a.start||"").localeCompare(String(b.start||""));
+    if(pref==="name")return String(a.name||"").localeCompare(String(b.name||""),"ja");
+    if(pref==="sales-desc")return eventMetrics(b).total-eventMetrics(a).total;
+    return String(b.start||b.end||"").localeCompare(String(a.start||a.end||""));
+  });
+  const cards=arr.map(x=>{const em=eventMetrics(x),total=em.total,fee=em.fee,allq=em.allq;const ended=x.end<jpToday();const status=x.eventClosed?"・締め済み":(ended?"・終了":"・開催前/開催中");
+    return `<div class="card" style="margin:7px 0"><div class="between"><div><b>${esc(x.name)}</b><div class="muted">${x.start} ～ ${x.end} ${status}</div></div><button class="primary" onclick="location.hash='${x.id}';db.tab='sale';render()">開く</button></div>
+      <div class="analysis-grid" style="margin-top:9px"><div class="analysis-box"><div class="label">売上</div><div class="value">${yen(total)}</div></div><div class="analysis-box"><div class="label">販売数</div><div class="value">${allq}個</div></div><div class="analysis-box"><div class="label">利益</div><div class="value">${yen(total-fee)}</div></div><div class="analysis-box"><div class="label">1組平均</div><div class="value">${em.groups?yen(total/em.groups):"¥0"}</div></div></div>
+      <div class="row" style="margin-top:8px"><button class="soft" style="flex:1" onclick="location.hash='${x.id}';db.tab='summary';render()">📊 振り返り・分析</button><button class="soft" onclick="location.hash='${x.id}';db.tab='settings';render()">⚙ 設定</button></div></div>`;}).join("");
+  return `<div class="card"><div class="between"><h2>イベント一覧</h2><span class="pill">${esc(prefLabel("eventListSort",pref))}</span></div>${cards||`<p class="muted">まだイベントがありません。</p>`}</div><div class="card"><button class="primary" onclick="newEvent()">＋新しいイベントを作る</button></div>`;
 }
+function prefLabel(k,v){const m={"eventListSort":{"newest":"新しい順","oldest":"古い順","name":"名前順","sales-desc":"売上順"},"historySort":{"time-asc":"新しい会計を下","time-desc":"新しい会計を上"},"inventorySort":{"custom":"商品登録順","name-asc":"商品名順","sold-desc":"販売数順","remain-desc":"残在庫順"},"summaryProductSort":{"qty-desc":"販売数順","sales-desc":"売上順","name-asc":"商品名順","custom":"商品登録順"},"summaryDaySort":{"date-asc":"日付順","sales-desc":"売上順","qty-desc":"販売数順"},"summaryPaymentSort":{"sales-desc":"売上順","name-asc":"名前順"},"summarySlotSort":{"time-asc":"時間順","sales-desc":"売上順","qty-desc":"数量順"}};return m[k]?.[v]||v||"";}
 function daySelect(x){
   const d=selectedDay(x);
   return `<label>販売日</label><select onchange="switchSalesDay(this.value)">
@@ -670,118 +743,44 @@ function switchSalesDay(d){
 function sale(x){
   if(!x)return events();
   const d=selectedDay(x),sm=stockMap(x),closed=!!x.closed?.[d],eventClosed=!!x.eventClosed;
+  const plist=eventProducts(x);
   return `${x.editTxId?txEditor(x,x.editTxId):""}
-  <div class="card"><div class="row" style="justify-content:flex-end;margin-bottom:8px">${undoButton()}</div><div class="grid"><div>${daySelect(x)}</div><div style="text-align:right">
-  <div class="muted">本日の売上</div><div class="big">${yen(sales(x,d))}</div><div class="muted">${transactions(x,d).length}組</div></div></div></div>
-  <div class="card"><div class="between"><h3 style="margin:0">かんたん会計</h3><span class="pill">${x.slot||1}時間ごと集計</span></div>
-  ${eventClosed?`<div class="dangerbox">このイベントは締め済みです。会計は追加できません。</div>`:`<p class="muted">販売はショーケース在庫から減ります。</p>`}
-  <div class="products">${db.products.map(p=>`<div class="prod"><b>${esc(p.name)}</b>
-  <small>${yen(x.prices?.[p.id]??p.price)}　ショーケース ${sm[p.id].show}個　／　ストッカー ${sm[p.id].store}個</small>
-  <div class="quickpay"><button class="primary" ${eventClosed||closed||(sm[p.id].show+sm[p.id].store)<1?'disabled':''} onclick="add('${p.id}',this)">カートに追加</button>
-  </div></div>`).join("")}</div></div>
-  ${cartHTML(x)}
-  <div class="card"><h3>会計履歴（${d}）</h3>${historyHTML(x,d)}</div>
-  <div class="card"><button class="warn undo" ${closed?'disabled':''} onclick="undoLastSale()">↩ 直前の会計を取り消す</button>
-  <div class="row" style="margin-top:7px"><button class="soft" style="flex:1" onclick="document.getElementById('cartTop').scrollIntoView({behavior:'smooth'})">まとめ会計</button>
-  <button class="soft" style="flex:1" onclick="db.tab='daily';save();render()">今日の日報</button></div></div>
-  <div class="card"><h3>時間帯別</h3>${slots(x,d)}</div>
-  <div class="card"><button class="soft" onclick="printDaily('${d}')">🖨 この日の日報を印刷</button></div>`;
+  <div class="card"><div class="row" style="justify-content:flex-end;margin-bottom:8px">${undoButton()}</div><div class="grid"><div>${daySelect(x)}</div><div style="text-align:right"><div class="muted">本日の売上</div><div class="big">${yen(sales(x,d))}</div><div class="muted">${transactions(x,d).length}組</div></div></div></div>
+  <div class="card"><div class="between"><h3 style="margin:0">かんたん会計</h3><span class="pill">${x.slot||1}時間ごと集計</span></div>${eventClosed?`<div class="dangerbox">このイベントは締め済みです。会計は追加できません。</div>`:`<p class="muted">商品並び順は「設定 → このイベントの商品ラインナップ」でいつでも変更できます。</p>`}
+  <div class="products">${plist.map(p=>`<div class="prod"><b>${esc(p.name)}</b><small>${yen(x.prices?.[p.id]??p.price)}　ショーケース ${sm[p.id]?.show||0}個　／　ストッカー ${sm[p.id]?.store||0}個</small><div class="quickpay"><button class="primary" ${eventClosed||closed||((sm[p.id]?.show||0)+(sm[p.id]?.store||0))<1?'disabled':''} onclick="add('${p.id}',this)">カートに追加</button></div></div>`).join("")}</div></div>
+  ${cartHTML(x)}<div class="card"><h3>会計履歴（${d}）</h3>${historyHTML(x,d)}</div><div class="card"><button class="warn undo" ${closed||eventClosed?'disabled':''} onclick="undoLastSale()">↩ 直前の会計を取り消す</button><div class="row" style="margin-top:7px"><button class="soft" style="flex:1" onclick="document.getElementById('cartTop').scrollIntoView({behavior:'smooth'})">まとめ会計</button><button class="soft" style="flex:1" onclick="db.tab='daily';save();render()">今日の日報</button></div></div><div class="card"><h3>時間帯別</h3>${slots(x,d)}</div><div class="card"><button class="soft" onclick="printDaily('${d}')">🖨 この日の日報を印刷</button></div>`;
 }
 function cartHTML(x){
   if(!x.cart.length)return `<div id="cartTop" class="card muted">複数商品をまとめる場合は、上の商品で「カートに追加」を押してください。</div>`;
-  const total=x.cart.reduce((s,i)=>s+i.qty*i.price,0);
-  return `<div id="cartTop" class="card"><h3>今回のお会計</h3><div class="cart">
-  ${x.cart.map(i=>`<div class="cartline"><span>${esc(i.name)}</span><span>${yen(i.price)}</span>
-  <span><button class="mini" onclick="chg('${i.productId}',-1)">−</button> ${i.qty} <button class="mini" onclick="chg('${i.productId}',1)">＋</button></span>
-  <b>${yen(i.qty*i.price)}</b></div>`).join("")}</div>
-  <div class="between" style="margin-top:10px"><b>合計</b><b class="big">${yen(total)}</b></div>
-  <div class="paygrid" style="margin-top:10px">${db.payments.map(p=>p==='現金'
-    ? `<button class="good" ${x.eventClosed?'disabled':''} onclick="cashCheckout(this)">💴 現金会計・お釣り計算</button>`
-    : `<button class="primary" ${x.eventClosed?'disabled':''} onclick="checkout('${esc(p)}',this)">${esc(p)}で確定</button>`
-  ).join("")}</div>
-  <p class="muted" style="margin:7px 0 0">現金の場合は「お預かり金額」を入力すると、お釣りを自動計算できます。</p>
-  <button class="bad" style="width:100%;margin-top:8px" onclick="cancelCart()">🗑 カートを全部取り消す</button></div>`;
+  const total=x.cart.reduce((s,i)=>s+i.qty*i.price,0),pays=paymentListForEvent(x);
+  return `<div id="cartTop" class="card"><h3>今回のお会計</h3><div class="cart">${x.cart.map(i=>`<div class="cartline"><span>${esc(i.name)}</span><span>${yen(i.price)}</span><span><button class="mini" onclick="chg('${i.productId}',-1)">−</button> ${i.qty} <button class="mini" onclick="chg('${i.productId}',1)">＋</button></span><b>${yen(i.qty*i.price)}</b></div>`).join("")}</div><div class="between" style="margin-top:10px"><b>合計</b><b class="big">${yen(total)}</b></div><div class="paygrid" style="margin-top:10px">${pays.map(p=>p==='現金'?`<button class="good" ${x.eventClosed?'disabled':''} onclick="cashCheckout(this)">💴 現金会計・お釣り計算</button>`:`<button class="primary" ${x.eventClosed?'disabled':''} onclick="checkout('${esc(p)}',this)">${esc(p)}で確定</button>`).join("")}</div><p class="muted" style="margin:7px 0 0">支払方法の並びは「設定」で変更できます。過去に使った支払方法は履歴から消しません。</p><button class="bad" style="width:100%;margin-top:8px" onclick="cancelCart()">🗑 カートを全部取り消す</button></div>`;
 }
 function payClass(p){const s=String(p||'');if(s.includes('PayPay'))return 'pay-red';if(s.includes('d払い')||s.includes('メルペイ'))return 'pay-blue';if(s.includes('au'))return 'pay-orange';if(s.includes('AEON'))return 'pay-pink';return '';}
 function historyHTML(x,d){
-  const arr=allTransactions(x,d).sort((a,b)=>a.id-b.id);
+  const pref=ensureViewPrefs().historySort,arr=allTransactions(x,d).slice().sort((a,b)=>pref==="time-desc"?b.id-a.id:a.id-b.id);
   if(!arr.length)return `<p class="muted">まだ会計がありません。</p>`;
-  return `<div class="history">${arr.map(t=>{
-    const voided=t.status==="void",dt=new Date(t.timestamp);
-    return `<div class="tx ${voided?'void':''}"><div class="txhead"><span class="txno">${Number(t.groupNo)||'?'}組目 ${voided?'<span class="pill">取消</span>':''}</span><b>${voided?'—':yen(t.total)}</b></div>
-    <div class="muted">${dt.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Tokyo'})}　<span class="paybadge ${payClass(t.payment)}">${esc(t.payment||'')}</span></div>
-    <div class="txitems">${(t.items||[]).map(i=>`${esc(i.name)} ×${i.qty}`).join(' ／ ')}</div>
-    ${!voided?`<div class="txactions"><button class="soft" onclick="openTx('${t.id}')">編集</button><button class="bad" onclick="voidTx('${t.id}')">この会計を取消</button></div>`
-    :`<div class="muted">この会計は売上・販売数から除外されています。</div>`}</div>`;
-  }).join("")}</div><div class="between" style="margin-top:10px"><b>本日の合計</b><b class="big">${yen(sales(x,d))}</b></div><div class="muted">販売組数：${transactions(x,d).length}組</div>`;
+  return `<div class="history">${arr.map(t=>{const voided=t.status==="void",dt=new Date(t.timestamp);return `<div class="tx ${voided?'void':''}"><div class="txhead"><span class="txno">${Number(t.groupNo)||'?'}組目 ${voided?'<span class="pill">取消</span>':''}</span><b>${voided?'—':yen(t.total)}</b></div><div class="muted">${dt.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Tokyo'})}　<span class="paybadge ${payClass(t.payment)}">${esc(t.payment||'')}</span></div><div class="txitems">${(t.items||[]).map(i=>`${esc(i.name)} ×${i.qty}`).join(' ／ ')}</div>${!voided?`<div class="txactions"><button class="soft" onclick="openTx('${t.id}')">編集</button><button class="bad" onclick="voidTx('${t.id}')">この会計を取消</button></div>`:`<div class="muted">この会計は売上・販売数から除外されています。</div>`}</div>`;}).join("")}</div><div class="between" style="margin-top:10px"><b>本日の合計</b><b class="big">${yen(sales(x,d))}</b></div><div class="muted">販売組数：${transactions(x,d).length}組　／　表示順：${prefLabel('historySort',pref)}</div>`;
 }
 function txEditor(x,id){
   const t=(x.transactions||[]).find(q=>String(q.id)===String(id));if(!t)return "";
-  const total=t.items.reduce((s,i)=>s+i.qty*i.price,0);
-  return `<div class="card editor"><div class="between"><h3>会計編集：${Number(t.groupNo)||'?'}組目</h3>
-  <button class="soft" onclick="x.editTxId=null;save();render()">閉じる</button></div>
-  <p class="muted">数量を増やす場合はショーケース在庫を使用します。減らした分はショーケースへ戻ります。</p>
-  ${db.products.map(p=>{let i=t.items.find(q=>q.productId===p.id),q=i?.qty||0,price=i?.price??(x.prices?.[p.id]??p.price);
-    return `<div class="editrow"><span>${esc(p.name)}<small class="muted"> ${yen(price)}</small></span><input id="txq_${p.id}" type="number" min="0" value="${q}"><span>${yen(q*price)}</span></div>`;
-  }).join("")}
-  <label>支払方法</label><select id="txpay">${db.payments.map(p=>`<option ${p===t.payment?'selected':''}>${esc(p)}</option>`).join("")}</select>
-  <div class="between" style="margin-top:10px"><b>合計</b><b class="big" id="txTotal">${yen(total)}</b></div>
-  <button class="primary" style="width:100%;margin-top:8px" onclick="saveTx('${t.id}')">この会計を更新</button></div>`;
+  const total=t.items.reduce((s,i)=>s+i.qty*i.price,0),plist=eventProducts(x,true),pays=paymentListForEvent(x);
+  return `<div class="card editor"><div class="between"><h3>会計編集：${Number(t.groupNo)||'?'}組目</h3><button class="soft" onclick="x.editTxId=null;save();render()">閉じる</button></div><p class="muted">数量変更も、このイベントの商品の並び順に連動します。</p>
+  ${plist.filter(p=>p.active!==false||t.items.some(i=>i.productId===p.id)).map(p=>{let i=t.items.find(q=>q.productId===p.id),q=i?.qty||0,price=i?.price??(x.prices?.[p.id]??p.price);return `<div class="editrow"><span>${esc(p.name)}<small class="muted"> ${yen(price)}</small></span><input id="txq_${p.id}" type="number" min="0" value="${q}"><span>${yen(q*price)}</span></div>`}).join("")}
+  <label>支払方法</label><select id="txpay">${pays.map(p=>`<option ${p===t.payment?'selected':''}>${esc(p)}</option>`).join("")}</select><div class="between" style="margin-top:10px"><b>合計</b><b class="big" id="txTotal">${yen(total)}</b></div><button class="primary" style="width:100%;margin-top:8px" onclick="saveTx('${t.id}')">この会計を更新</button></div>`;
 }
 function openTx(id){let x=e();x.editTxId=id;save();render();setTimeout(()=>document.querySelector('.editor')?.scrollIntoView({behavior:'smooth',block:'center'}),50)}
 function saveTx(id){
-  const x=e(),t=x.transactions.find(q=>String(q.id)===String(id));if(!t)return;
-  if(x.eventClosed)return alert("このイベントは締め済みです。");
-  if(x.closed?.[t.day])return alert("締め済みの日は変更できません。");
-  const oldItems=(t.items||[]).map(i=>({...i}));
-  const items=[];
-  db.products.forEach(p=>{
-    const q=Math.max(0,Number(document.getElementById('txq_'+p.id)?.value)||0);
-    if(q){
-      const old=t.items.find(i=>i.productId===p.id);
-      const price=old?.price??Number(x.prices?.[p.id]??p.price);
-      items.push({productId:p.id,name:p.name,price,qty:q});
-    }
-  });
+  const x=e(),t=x.transactions.find(q=>String(q.id)===String(id));if(!t)return;if(x.eventClosed)return alert("このイベントは締め済みです。");if(x.closed?.[t.day])return alert("締め済みの日は変更できません。");
+  const oldItems=(t.items||[]).map(i=>({...i})),items=[];
+  eventProducts(x,true).forEach(p=>{const el=document.getElementById('txq_'+p.id);if(!el)return;const q=Math.max(0,Number(el.value)||0);if(q){const old=t.items.find(i=>i.productId===p.id);const price=old?.price??Number(x.prices?.[p.id]??p.price);items.push({productId:p.id,name:p.name,price,qty:q});}});
   if(!items.length)return alert("商品を1つ以上選択してください。");
-
-  // 差分を計算し、増加分はショーケースから、減少分はショーケースへ戻す
-  const oldBy={},newBy={};
-  oldItems.forEach(i=>oldBy[i.productId]=(oldBy[i.productId]||0)+num(i.qty));
-  items.forEach(i=>newBy[i.productId]=(newBy[i.productId]||0)+num(i.qty));
-  const m=stockMap(x);
-  for(const p of db.products){
-    const diff=(newBy[p.id]||0)-(oldBy[p.id]||0);
-    if(diff>0 && ((m[p.id]?.show||0)+(m[p.id]?.store||0))<diff)
-      return alert(`${p.name}の在庫が不足しています。\n現在：${(m[p.id]?.show||0)+(m[p.id]?.store||0)}個`);
-  }
+  const oldBy={},newBy={};oldItems.forEach(i=>oldBy[i.productId]=(oldBy[i.productId]||0)+num(i.qty));items.forEach(i=>newBy[i.productId]=(newBy[i.productId]||0)+num(i.qty));const m=stockMap(x);
+  for(const p of eventProducts(x,true)){const diff=(newBy[p.id]||0)-(oldBy[p.id]||0);if(diff>0&&((m[p.id]?.show||0)+(m[p.id]?.store||0))<diff)return alert(`${p.name}の在庫が不足しています。\n現在：${(m[p.id]?.show||0)+(m[p.id]?.store||0)}個`)}
   pushUndo(x,`${Number(t.groupNo)||'?'}組目の会計を編集`);
-  for(const p of db.products){
-    const diff=(newBy[p.id]||0)-(oldBy[p.id]||0);
-    if(diff>0){
-      const s=ensureStock(x,p.id);
-      const fromShow=Math.min(num(s.show),diff);
-      s.show-=fromShow;
-      s.store-=diff-fromShow;
-    }
-    if(diff<0)ensureStock(x,p.id).show+=(-diff);
-  }
-  const oldTotal=t.total;
-  t.items=items;t.total=items.reduce((s,i)=>s+i.qty*i.price,0);
-  t.payment=document.getElementById('txpay').value;
-  t.editedAt=new Date().toISOString();t.editNote=`${yen(oldTotal)} → ${yen(t.total)}`;
-  x.editTxId=null;save();render();toast("会計を更新しました");
+  for(const p of eventProducts(x,true)){const diff=(newBy[p.id]||0)-(oldBy[p.id]||0);if(diff>0){const s=ensureStock(x,p.id),fromShow=Math.min(num(s.show),diff);s.show-=fromShow;s.store-=diff-fromShow;}if(diff<0)ensureStock(x,p.id).show+=(-diff);}
+  const oldTotal=t.total;t.items=items;t.total=items.reduce((s,i)=>s+i.qty*i.price,0);t.payment=document.getElementById('txpay').value;t.editedAt=new Date().toISOString();t.editNote=`${yen(oldTotal)} → ${yen(t.total)}`;x.editTxId=null;save();render();toast("会計を更新しました");
 }
-function add(pid,btn){
-  const x=e(),p=db.products.find(q=>q.id===pid);if(!p)return;
-  if(x.eventClosed)return alert("このイベントは締め済みです。");
-  if(x.closed?.[selectedDay(x)])return alert("この日は締め済みです。");
-  const sm=stockMap(x),i=x.cart.find(q=>q.productId===pid);
-  if((sm[pid]?.show||0)<=((i?.qty)||0))return alert("ショーケース在庫が不足しています。");
-  const price=Number(x.prices?.[pid]??p.price);
-  if(i)i.qty++;else x.cart.push({productId:pid,name:p.name,price,qty:1});
-  save();flash(btn,"カートに追加しました");render();
-}
+function add(pid,btn){const x=e(),p=eventProductById(x,pid);if(!p)return;if(x.eventClosed)return alert("このイベントは締め済みです。");if(x.closed?.[selectedDay(x)])return alert("この日は締め済みです。");const sm=stockMap(x),i=x.cart.find(q=>q.productId===pid);if((sm[pid]?.show||0)<=((i?.qty)||0))return alert("ショーケース在庫が不足しています。");const price=Number(x.prices?.[pid]??p.price);if(i)i.qty++;else x.cart.push({productId:pid,name:p.name,price,qty:1});save();flash(btn,"カートに追加しました");render();}
 function chg(pid,n){
   const x=e(),i=x.cart.find(q=>q.productId===pid);if(!i)return;
   if(x.eventClosed)return alert("このイベントは締め済みです。");
@@ -807,19 +806,7 @@ function createTransaction(x,d,items,pay){
     items:items.map(i=>({...i})),total:items.reduce((s,i)=>s+i.qty*i.price,0),payment:pay,status:"completed"};
   x.transactions.push(t);return t;
 }
-function quickSale(pid,pay,btn){
-  const x=e(),d=selectedDay(x);
-  if(x.eventClosed)return alert("このイベントは締め済みです。");
-  if(x.closed?.[d])return alert("この日は締め済みです。");
-  const p=db.products.find(q=>q.id===pid);if(!p)return;
-  const price=Number(x.prices?.[pid]??p.price);
-  const items=[{productId:pid,name:p.name,price,qty:1}];
-  const r=consumeForSale(x,items);
-  if(!r.ok)return alert(`${r.name}のショーケース在庫が不足しています。\n現在：${r.available}個`);
-  // 在庫・会計を変更する直前にUndo用スナップショット
-  pushUndo(x,`${p.name}を${pay}で販売`);
-  createTransaction(x,d,items,pay);save();flash(btn,`${p.name}を${pay}で会計しました`);render();
-}
+function quickSale(pid,pay,btn){const x=e(),d=selectedDay(x);if(x.eventClosed)return alert("このイベントは締め済みです。");if(x.closed?.[d])return alert("この日は締め済みです。");const p=eventProductById(x,pid);if(!p)return;const price=Number(x.prices?.[pid]??p.price),items=[{productId:pid,name:p.name,price,qty:1}],r=consumeForSale(x,items);if(!r.ok)return alert(`${r.name}のショーケース在庫が不足しています。\n現在：${r.available}個`);pushUndo(x,`${p.name}を${pay}で販売`);createTransaction(x,d,items,pay);save();flash(btn,`${p.name}を${pay}で会計しました`);render();}
 function undoLastSale(){
   const x=e(),d=selectedDay(x),arr=allTransactions(x,d).filter(t=>t.status!=="void");
   if(!arr.length)return alert("取り消せる販売がありません。");
@@ -930,76 +917,23 @@ function fmt(m){return String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60)
 
 /* 在庫画面：搬入量だけ入力。ショーケース/ストッカーは自動計算・移動ボタンで操作 */
 function inventory(x){
-  const m=stockMap(x);
-  return `<div class="card"><h2>在庫管理</h2>
-  <p class="muted">初回搬入はショーケースへ、追加搬入はストッカーへ入ります。販売はショーケースを優先し、不足分はストッカーから自動で使用します。ストッカー↔ショーケースの移動はボタンで記録します。日締めでは在庫を移動せず、そのまま翌日に繰り越します。</p>
-  <div class="stocknote"><b>総在庫 ＝ ショーケース ＋ ストッカー</b><br>
-  初回搬入 ＋ 追加搬入累計 − 販売数 ＝ 総在庫</div></div>
-  ${db.products.map(p=>{const q=m[p.id];return `<div class="card stockcard">
-    <div class="between"><h3>${esc(p.name)}</h3><span class="stocktotal">${q.remaining}個</span></div>
-    <div class="grid">
-      <div><label>初回搬入（ショーケースへ）</label><input id="in_${p.id}" type="number" min="0" value="${q.in}" ${x.eventClosed?'disabled':''}></div>
-      <div><label>今回の追加搬入（ストッカーへ）</label><input id="add_${p.id}" type="number" min="0" value="0" ${x.eventClosed||x.closed?.[selectedDay(x)]?'disabled':''}><small class="muted">本日の追加済み：${num(x.addByDay?.[selectedDay(x)]?.[p.id])}個</small></div>
-      <div><label>ショーケース</label><input type="number" value="${q.show}" readonly></div>
-      <div><label>ストッカー</label><input type="number" value="${q.store}" readonly></div>
-    </div>
-    <div class="between" style="margin-top:8px"><span class="muted">販売済み：${q.sold}個 ／ 総搬入：${q.totalIn}個</span>
-    <div class="row" style="flex-wrap:wrap"><button class="primary" ${x.eventClosed?'disabled':''} onclick="transferToShow('${p.id}')">ストッカー → ショーケース</button><button class="soft" ${x.eventClosed?'disabled':''} onclick="transferToStock('${p.id}')">ショーケース → ストッカー</button><button class="warn" ${x.eventClosed?'disabled':''} onclick="editLoss('takeback','${p.id}')">会社へ持ち帰り</button><button class="bad" ${x.eventClosed?'disabled':''} onclick="editLoss('waste','${p.id}')">廃棄</button></div></div>
-  </div>`}).join("")}
-  <div class="card"><div class="row" style="margin-bottom:8px">${undoButton()}<button class="soft" onclick="location.reload()">表示を更新</button></div><button class="primary" style="width:100%;padding:14px" ${x.eventClosed?'disabled':''} onclick="saveAllStock()">💾 搬入数をすべて保存</button>
-  <p class="muted" style="margin:7px 0 0">初回搬入の増減はショーケース、追加搬入は今回入力した数量をストッカーへ加算します。前日のストッカー残りは上書きされません。</p></div>`;
+  const m=stockMap(x),pref=ensureViewPrefs().inventorySort;let plist=eventProducts(x,true);
+  if(pref==='name-asc')plist=plist.slice().sort((a,b)=>a.name.localeCompare(b.name,'ja'));
+  if(pref==='sold-desc')plist=plist.slice().sort((a,b)=>(m[b.id]?.sold||0)-(m[a.id]?.sold||0));
+  if(pref==='remain-desc')plist=plist.slice().sort((a,b)=>(m[b.id]?.remaining||0)-(m[a.id]?.remaining||0));
+  return `<div class="card"><h2>在庫管理</h2><p class="muted">初回搬入はショーケースへ、追加搬入はストッカーへ。販売・移動・持ち帰り・廃棄は在庫履歴に記録されます。</p><div class="stocknote"><b>総在庫 ＝ ショーケース ＋ ストッカー</b><br>初回搬入 ＋ 追加搬入累計 − 販売数 − 持ち帰り − 廃棄 ＝ 総在庫</div><p class="muted">表示順：${prefLabel('inventorySort',pref)}（設定で変更可）</p></div>
+  ${plist.map(p=>{const q=m[p.id]||{in:0,add:0,show:0,store:0,sold:0,totalIn:0,remaining:0};return `<div class="card stockcard ${p.active===false?'disabled-line':''}"><div class="between"><h3>${esc(p.name)}</h3><span class="stocktotal">${q.remaining}個</span></div><div class="grid"><div><label>初回搬入（ショーケースへ）</label><input id="in_${p.id}" type="number" min="0" value="${q.in}" ${x.eventClosed?'disabled':''}></div><div><label>今回の追加搬入（ストッカーへ）</label><input id="add_${p.id}" type="number" min="0" value="0" ${x.eventClosed||x.closed?.[selectedDay(x)]?'disabled':''}><small class="muted">本日の追加済み：${num(x.addByDay?.[selectedDay(x)]?.[p.id])}個</small></div><div><label>ショーケース</label><input type="number" value="${q.show}" readonly></div><div><label>ストッカー</label><input type="number" value="${q.store}" readonly></div></div><div class="between" style="margin-top:8px"><span class="muted">販売済み：${q.sold}個 ／ 総搬入：${q.totalIn}個</span><div class="row" style="flex-wrap:wrap"><button class="primary" ${x.eventClosed?'disabled':''} onclick="transferToShow('${p.id}')">ストッカー → ショーケース</button><button class="soft" ${x.eventClosed?'disabled':''} onclick="transferToStock('${p.id}')">ショーケース → ストッカー</button><button class="warn" ${x.eventClosed?'disabled':''} onclick="editLoss('takeback','${p.id}')">会社へ持ち帰り</button><button class="bad" ${x.eventClosed?'disabled':''} onclick="editLoss('waste','${p.id}')">廃棄</button></div></div></div>`;}).join('')}
+  <div class="card"><div class="row" style="margin-bottom:8px">${undoButton()}<button class="soft" onclick="render()">表示を更新</button></div><button class="primary" style="width:100%;padding:14px" ${x.eventClosed?'disabled':''} onclick="saveAllStock()">💾 搬入数をすべて保存</button></div>`;
 }
-function saveAllStock(){
-  const x=e();if(!x)return;
-  if(x.eventClosed)return alert("締め済みイベントは在庫を変更できません。");
-  const d=selectedDay(x);
-  if(x.closed?.[d])return alert(`${d}は締め済みのため搬入できません。`);
-  x.stock=x.stock||[];x.stockMoves=x.stockMoves||[];x.addByDay=x.addByDay||{};x.addByDay[d]=x.addByDay[d]||{};
-  const m=stockMap(x),changes=[];
-  for(const p of db.products){
-    const old=m[p.id]||{in:0,add:0,show:0,store:0};
-    const ni=num(document.getElementById("in_"+p.id)?.value);
-    const na=num(document.getElementById("add_"+p.id)?.value);
-    const di=ni-old.in;
-    // 追加搬入は「今回の追加分」。過去日の追加搬入累計を上書きしない。
-    if(di<0 && old.show<(-di))return alert(`${p.name}の初回搬入数を減らせません。現在のショーケース在庫が不足します。`);
-    changes.push({p,ni,na,di});
-  }
-  const changed=changes.some(c=>c.di!==0||c.na>0);
-  if(!changed)return toast("搬入数に変更はありません");
-  pushUndo(x,"搬入数を変更");
-  for(const c of changes){
-    const s=ensureStock(x,c.p.id);
-    if(c.di!==0)s.show+=c.di;
-    if(c.na>0){
-      s.store+=c.na;
-      s.add=num(s.add)+c.na;
-      x.addByDay[d][c.p.id]=num(x.addByDay[d][c.p.id])+c.na;
-      x.stockMoves.push({id:Date.now()+Math.random(),productId:c.p.id,qty:c.na,type:"additional_delivery",day:d,timestamp:new Date().toISOString()});
-    }
-    s.in=c.ni;
-  }
-  save();render();toast(`${d}の追加搬入を保存しました`);
-}
-function payTotals(x,d){
-  const m={};db.payments.forEach(p=>m[p]=0);
-  transactions(x,d).forEach(t=>m[t.payment]=(m[t.payment]||0)+t.total);return m;
-}
+function saveAllStock(){const x=e();if(!x)return;if(x.eventClosed)return alert("締め済みイベントは在庫を変更できません。");const d=selectedDay(x);if(x.closed?.[d])return alert(`${d}は締め済みのため搬入できません。`);x.stock=x.stock||[];x.stockMoves=x.stockMoves||[];x.addByDay=x.addByDay||{};x.addByDay[d]=x.addByDay[d]||{};const m=stockMap(x),changes=[];for(const p of eventProducts(x,true)){const old=m[p.id]||{in:0,add:0,show:0,store:0},ni=num(document.getElementById("in_"+p.id)?.value),na=num(document.getElementById("add_"+p.id)?.value),di=ni-old.in;if(di<0&&old.show<(-di))return alert(`${p.name}の初回搬入数を減らせません。現在のショーケース在庫が不足します。`);changes.push({p,ni,na,di});}const changed=changes.some(c=>c.di!==0||c.na>0);if(!changed)return toast("搬入数に変更はありません");pushUndo(x,"搬入数を変更");for(const c of changes){const s=ensureStock(x,c.p.id);if(c.di!==0)s.show+=c.di;if(c.na>0){s.store+=c.na;s.add=num(s.add)+c.na;x.addByDay[d][c.p.id]=num(x.addByDay[d][c.p.id])+c.na;x.stockMoves.push({id:Date.now()+Math.random(),productId:c.p.id,qty:c.na,type:"additional_delivery",day:d,timestamp:new Date().toISOString()});}s.in=c.ni;}save();render();toast(`${d}の追加搬入を保存しました`);}
+function payTotals(x,d){const m={};paymentListForEvent(x).forEach(p=>m[p]=0);transactions(x,d).forEach(t=>m[t.payment]=(m[t.payment]||0)+Number(t.total||0));return m;}
 function staffForDay(x,d){
   const raw=x?.staffByDay?.[d];
   if(Array.isArray(raw)) return [...new Set(raw.filter(i=>String(i||"").trim()).map(i=>String(i).trim()))];
   if(typeof raw==="string" && raw.trim()) return [...new Set(raw.split(/[,、\n]/).map(i=>i.trim()).filter(Boolean))];
   return [];
 }
-function staffEditor(x,d){
-  const current=staffForDay(x,d);
-  const names=db.staff.filter(s=>String(s||'').trim());
-  const options=names.map(s=>`<label style="display:flex;align-items:center;gap:7px;margin:5px 0;font-weight:500"><input type="checkbox" id="staff_${d}_${encodeURIComponent(s)}" value="${esc(s)}" ${current.includes(s)?'checked':''} style="width:auto">${esc(s)}</label>`).join('');
-  return `<div class="card"><div class="between"><h3 style="margin:0">👥 ${d}のスタッフ</h3><span class="pill">日ごとに変更できます</span></div>
-  ${names.length?options:`<p class="muted">スタッフマスターがまだありません。「設定」から登録してください。</p>`}
-  <div class="row" style="margin-top:8px"><button class="primary" onclick="saveDayStaff('${d}')">この日のスタッフを保存</button><button class="soft" onclick="clearDayStaff('${d}')">全員解除</button></div>
-  </div>`;
-}
+function staffEditor(x,d){const current=staffForDay(x,d),names=orderedStaff();const options=names.map((s,i)=>`<label style="display:flex;align-items:center;gap:7px;margin:5px 0;font-weight:500"><input type="checkbox" id="staff_${d}_${encodeURIComponent(s)}" value="${esc(s)}" ${current.includes(s)?'checked':''} style="width:auto">${esc(s)}</label>`).join('');return `<div class="card"><div class="between"><h3 style="margin:0">👥 ${d}のスタッフ</h3><span class="pill">並び順は設定で変更可</span></div>${names.length?options:`<p class="muted">スタッフマスターがまだありません。</p>`}<div class="row" style="margin-top:8px"><button class="primary" onclick="saveDayStaff('${d}')">この日のスタッフを保存</button><button class="soft" onclick="clearDayStaff('${d}')">全員解除</button></div></div>`;}
 function saveDayStaff(d){
   const x=e();if(!x)return;
   if(x.eventClosed)return alert("イベント締め後は変更できません。");
@@ -1051,48 +985,22 @@ function closeDay(d){
   pushUndo(x,`${d}を締める`);x.closed=x.closed||{};x.closed[d]=new Date().toISOString();archiveDay(x,d);save();render();toast(`${d}を締めました。締め済みデータを保存しました`);
 }
 
-function eventProductCatalog(x){
-  if(Array.isArray(x?.productCatalog) && x.productCatalog.length) return x.productCatalog;
-  const map=new Map(),order=[];
-  const add=(p)=>{if(!p?.id||map.has(p.id))return;map.set(p.id,{id:p.id,name:p.name||p.id,price:Number(p.price||0)});order.push(p.id)};
-  (x?.transactions||[]).forEach(t=>(t.items||[]).forEach(i=>add({id:i.productId,name:i.name,price:i.price})));
-  (x?.stock||[]).forEach(st=>{const p=db.products.find(q=>q.id===st.productId);add(p||{id:st.productId,name:st.productId,price:x?.prices?.[st.productId]||0});});
-  (x?.manualDays&&Object.values(x.manualDays)).forEach(d=>(d?.products||[]).forEach(i=>add({id:i.id,name:i.name,price:i.price})));
-  return order.map(id=>map.get(id));
-}
 function snapshotEventProducts(x){
   if(!x)return;
-  x.productCatalog=db.products.map(p=>({id:p.id,name:p.name,price:Number(x.prices?.[p.id]??p.price)}));
+  ensureEventProductCatalog(x);
+  x.productCatalog=(x.productCatalog||[]).map(p=>({id:p.id,name:p.name,price:Number(x.prices?.[p.id]??p.price),active:p.active!==false}));
+  x.productOrder=normalizeOrder(x.productOrder,x.productCatalog);
 }
 
 function eventMetrics(x){
-  const days=dayList(x).map(d=>dayData(x,d));
-  const total=days.reduce((a,d)=>a+num(d.sales),0);
-  const fee=x.feeMode==="daily"?days.reduce((a,d)=>a+num(d.fee),0):Number(x.feeTotal||0);
-  const groups=days.reduce((a,d)=>a+num(d.groups),0),allq=days.reduce((a,d)=>a+num(d.qty),0);
-  const pay={};db.payments.forEach(p=>pay[p]=0);days.forEach(d=>Object.entries(d.pm||{}).forEach(([k,v])=>pay[k]=(pay[k]||0)+num(v)));
-  const catalog=eventProductCatalog(x);
-  const prodMap={};catalog.forEach(p=>prodMap[p.id]={id:p.id,name:p.name,qty:0,sales:0});
-  days.forEach(d=>(d.products||[]).forEach(v=>{if(!prodMap[v.id])prodMap[v.id]={id:v.id,name:v.name||v.id,qty:0,sales:0};prodMap[v.id].qty+=num(v.qty);prodMap[v.id].sales+=num(v.sales);}));
-  const prod=Object.values(prodMap).sort((a,b)=>b.qty-a.qty);
-  const slotData={};days.forEach(d=>Object.entries(d.slotData||{}).forEach(([k,v])=>{slotData[k]??={qty:0,sales:0,groups:0};slotData[k].qty+=num(v.qty);slotData[k].sales+=num(v.sales);slotData[k].groups+=num(v.groups);}));
+  const days=dayList(x).map(d=>dayData(x,d));const total=days.reduce((a,d)=>a+num(d.sales),0),fee=x.feeMode==="daily"?days.reduce((a,d)=>a+num(d.fee),0):Number(x.feeTotal||0),groups=days.reduce((a,d)=>a+num(d.groups),0),allq=days.reduce((a,d)=>a+num(d.qty),0);
+  const pay={};paymentListForEvent(x).forEach(p=>pay[p]=0);days.forEach(d=>Object.entries(d.pm||{}).forEach(([k,v])=>pay[k]=(pay[k]||0)+num(v)));
+  const prodMap={};eventProducts(x,true).forEach(p=>prodMap[p.id]={id:p.id,name:p.name,qty:0,sales:0});days.forEach(d=>(d.products||[]).forEach(v=>{if(!prodMap[v.id])prodMap[v.id]={id:v.id,name:v.name||v.id,qty:0,sales:0};prodMap[v.id].qty+=num(v.qty);prodMap[v.id].sales+=num(v.sales);}));
+  const prod=Object.values(prodMap),slotData={};days.forEach(d=>Object.entries(d.slotData||{}).forEach(([k,v])=>{slotData[k]??={qty:0,sales:0,groups:0};slotData[k].qty+=num(v.qty);slotData[k].sales+=num(v.sales);slotData[k].groups+=num(v.groups);}));
   return {total,fee,profit:total-fee,groups,allq,avg:groups?total/groups:0,pay,prod,days,slotData};
 }
-
-function payTotalsAll(x){
-  const m={};db.payments.forEach(p=>m[p]=0);
-  transactions(x).forEach(t=>m[t.payment]=(m[t.payment]||0)+Number(t.total||0));
-  return m;
-}
-function endingInventory(x){
-  const catalog=eventProductCatalog(x),m={};
-  (x.stock||[]).forEach(st=>{m[st.productId]={in:Number(st.in||0)+Number(st.add||0),show:Number(st.show||0),store:Number(st.store||0)};});
-  return catalog.map(p=>{
-    const v=m[p.id]||{in:0,show:0,store:0};
-    const sold=(x.transactions||[]).filter(t=>t.status!=="void").reduce((a,t)=>a+(t.items||[]).filter(i=>i.productId===p.id).reduce((b,i)=>b+Number(i.qty||0),0),0);
-    return {name:p.name,show:v.show,store:v.store,total:v.show+v.store,sold,in:v.in};
-  });
-}
+function payTotalsAll(x){const m={};paymentListForEvent(x).forEach(p=>m[p]=0);transactions(x).forEach(t=>m[t.payment]=(m[t.payment]||0)+Number(t.total||0));return m;}
+function endingInventory(x){const catalog=eventProducts(x,true),m={};(x.stock||[]).forEach(st=>{m[st.productId]={in:Number(st.in||0)+Number(st.add||0),show:Number(st.show||0),store:Number(st.store||0)};});return catalog.map(p=>{const v=m[p.id]||{in:0,show:0,store:0};const sold=(x.transactions||[]).filter(t=>t.status!=="void").reduce((a,t)=>a+(t.items||[]).filter(i=>i.productId===p.id).reduce((b,i)=>b+Number(i.qty||0),0),0);return {name:p.name,show:v.show,store:v.store,total:v.show+v.store,sold,in:v.in};});}
 function eventNameForYearCompare(name){
   // 「駅マルシェ2026」と「駅マルシェ2027」のように、年だけ違う同名イベントを比較する。
   return String(name||'').replace(/20\d{2}/g,'').replace(/19\d{2}/g,'').replace(/[\s　]+/g,'').trim();
@@ -1110,112 +1018,73 @@ function findPreviousYearEvent(x){
   }).sort((a,b)=>String(b.end||b.start||'').localeCompare(String(a.end||a.start||'')));
   return arr[0]||null;
 }
+function comparisonEvent(x){
+  if(x?.compareEventId){const q=(db.events||[]).find(v=>v.id===x.compareEventId&&v.id!==x.id);if(q)return q;}
+  return findPreviousYearEvent(x);
+}
+function setCompareEvent(id){const x=e();if(!x||x.eventClosed)return; x.compareEventId=id||"";save();render();}
 function signedDiff(a,b){
   const d=Number(a||0)-Number(b||0);
   return d>0?`+${d}`:`${d}`;
 }
 function summary(x){
-  if(!x)return "";
-  const m=eventMetrics(x), inv=endingInventory(x), prev=findPreviousYearEvent(x), pm=m.pay;
-  const topProducts=m.prod.filter(p=>p.qty>0).slice(0,10);
-  const dailyRows=m.days.map(d=>`<tr><td>${d.day}</td><td>${d.qty}個</td><td>${yen(d.sales)}</td><td>${d.groups}組</td><td>${esc((d.staff||[]).join('、')||'未登録')} ${d.source==='manual'?'<span class="pill">手入力実績</span>':d.source==='closed'?'<span class="pill">締め済み</span>':''}</td></tr>`).join("");
-  const payRows=Object.entries(pm).sort((a,b)=>b[1]-a[1]).map(([p,v])=>`<tr><td>${esc(p)}</td><td>${yen(v)}</td><td>${m.total?Math.round(v/m.total*100):0}%</td></tr>`).join("");
-  const prodRows=topProducts.map((p,i)=>`<div class="rankrow"><b>${i+1}</b><span>${esc(p.name)}</span><b>${p.qty}個 / ${yen(p.sales)}</b></div>`).join("") || `<p class="muted">販売実績がありません。</p>`;
-  const slotRows=Object.entries(m.slotData).sort((a,b)=>b[1].sales-a[1].sales).map(([k,v])=>`<tr><td>${k}</td><td>${v.qty}個</td><td>${yen(v.sales)}</td><td>${v.groups}組</td></tr>`).join("");
-  const invRows=inv.map(v=>`<tr><td>${esc(v.name)}</td><td>${v.in}個</td><td>${v.sold}個</td><td>${v.show}個</td><td>${v.store}個</td><td>${v.total}個</td></tr>`).join("");
-  let compare="";
-  if(prev){
-    const p=eventMetrics(prev);
-    const topNow=m.prod.reduce((best,v)=>v.qty>(best?.qty||-1)?v:best,null);
-    const topPrev=p.prod.reduce((best,v)=>v.qty>(best?.qty||-1)?v:best,null);
-    compare=`<div class="card"><div class="between"><h3>前年イベントとの比較</h3><span class="pill">${esc(prev.name)}</span></div>
-      <div class="analysis-grid">
-        <div class="analysis-box"><div class="label">売上差</div><div class="value">${yen(m.total-p.total)}</div><div class="muted">今回 ${yen(m.total)} / 前年 ${yen(p.total)}</div></div>
-        <div class="analysis-box"><div class="label">販売数差</div><div class="value">${signedDiff(m.allq,p.allq)}個</div><div class="muted">今回 ${m.allq} / 前年 ${p.allq}</div></div>
-        <div class="analysis-box"><div class="label">1組平均差</div><div class="value">${yen(m.avg-p.avg)}</div><div class="muted">今回 ${yen(m.avg)} / 前年 ${yen(p.avg)}</div></div>
-        <div class="analysis-box"><div class="label">利益差</div><div class="value">${yen(m.profit-p.profit)}</div><div class="muted">今回 ${yen(m.profit)} / 前年 ${yen(p.profit)}</div></div>
-      </div>
-      <p style="margin-bottom:0"><b>人気No.1：</b>${topNow?esc(topNow.name)+" "+topNow.qty+"個":"なし"} ／ 前年：${topPrev?esc(topPrev.name)+" "+topPrev.qty+"個":"なし"}</p>
-    </div>`;
-  }else{
-    compare=`<div class="card"><h3>前年イベントとの比較</h3><p class="muted">同じ名称で前年（1年前）のイベントがまだありません。前年の同じイベントが締め済みになると比較できます。</p></div>`;
-  }
-  return `<div class="card"><div class="between"><h2>イベント振り返り・分析</h2><span class="pill">${x.eventClosed?"イベント締め済み":(x.end<jpToday()?"終了イベント":"開催中/予定")}</span></div>
-  ${x.eventClosed?`<div class="dangerbox">🔒 このイベントは締め済みです。過去データはそのまま残ります。</div><div class="row" style="margin-top:8px"><button class="primary" onclick="newEvent()">＋ 次のイベントを作る</button><button class="soft" onclick="location.hash='';db.tab='events';save();render()">イベント一覧へ</button></div>`:`<div class="row" style="margin-bottom:8px"><button class="warn" onclick="closeEvent()">🔒 このイベントを締める</button><button class="primary" onclick="location.hash='';db.tab='events';save();render()">イベント一覧へ</button></div>`}
-    <p class="muted">${esc(x.name)}　${x.start} ～ ${x.end}</p>
-    <div class="analysis-grid">
-      <div class="analysis-box"><div class="label">総売上</div><div class="value">${yen(m.total)}</div></div>
-      <div class="analysis-box"><div class="label">総販売数</div><div class="value">${m.allq}個</div></div>
-      <div class="analysis-box"><div class="label">利益</div><div class="value">${yen(m.profit)}</div></div>
-      <div class="analysis-box"><div class="label">1組平均購入額</div><div class="value">${yen(m.avg)}</div></div>
-      <div class="analysis-box"><div class="label">販売組数</div><div class="value">${m.groups}組</div></div>
-      <div class="analysis-box"><div class="label">経費・手数料</div><div class="value">${yen(m.fee)}</div></div>
-    </div>
-  </div>
-  ${compare}
-  <div class="card"><h3>🏆 商品販売ランキング</h3><div class="ranklist">${prodRows}</div></div>
+  if(!x)return "";const m=eventMetrics(x),inv=endingInventory(x),prev=comparisonEvent(x),prefs=ensureViewPrefs();
+  let prods=m.prod.slice();if(prefs.summaryProductSort==='qty-desc')prods.sort((a,b)=>b.qty-a.qty||b.sales-a.sales);else if(prefs.summaryProductSort==='sales-desc')prods.sort((a,b)=>b.sales-a.sales||b.qty-a.qty);else if(prefs.summaryProductSort==='name-asc')prods.sort((a,b)=>a.name.localeCompare(b.name,'ja'));else prods=eventProducts(x,true).map(p=>m.prod.find(v=>v.id===p.id)||{id:p.id,name:p.name,qty:0,sales:0});
+  if(!prefs.summaryShowZero)prods=prods.filter(p=>p.qty>0||p.sales>0);const lim=Number(prefs.summaryProductLimit)||0;const topProducts=lim?prods.slice(0,lim):prods;
+  let days=m.days.slice();if(prefs.summaryDaySort==='sales-desc')days.sort((a,b)=>b.sales-a.sales||String(a.day).localeCompare(String(b.day)));else if(prefs.summaryDaySort==='qty-desc')days.sort((a,b)=>b.qty-a.qty||String(a.day).localeCompare(String(b.day)));
+  let payEntries=Object.entries(m.pay);if(prefs.summaryPaymentSort==='name-asc')payEntries.sort((a,b)=>a[0].localeCompare(b[0],'ja'));else payEntries.sort((a,b)=>b[1]-a[1]);
+  let slotEntries=Object.entries(m.slotData);if(prefs.summarySlotSort==='sales-desc')slotEntries.sort((a,b)=>b[1].sales-a[1].sales);else if(prefs.summarySlotSort==='qty-desc')slotEntries.sort((a,b)=>b[1].qty-a[1].qty);else slotEntries.sort((a,b)=>a[0].localeCompare(b[0],'ja'));
+  const dailyRows=days.map(d=>`<tr><td>${d.day}</td><td>${d.qty}個</td><td>${yen(d.sales)}</td><td>${d.groups}組</td><td>${esc((d.staff||[]).join('、')||'未登録')} ${d.source==='manual'?'<span class="pill">手入力実績</span>':d.source==='closed'?'<span class="pill">締め済み</span>':''}</td></tr>`).join('');
+  const payRows=payEntries.map(([p,v])=>`<tr><td><span class="paybadge ${payClass(p)}">${esc(p)}</span></td><td>${yen(v)}</td><td>${m.total?Math.round(v/m.total*100):0}%</td></tr>`).join('');
+  const prodRows=topProducts.map((p,i)=>`<div class="rankrow"><b>${i+1}</b><span>${esc(p.name)}${!p.qty&&!p.sales?' <span class="muted">実績なし</span>':''}</span><b>${p.qty}個 / ${yen(p.sales)}</b></div>`).join('')||`<p class="muted">表示できる商品実績がありません。</p>`;
+  const slotRows=slotEntries.map(([k,v])=>`<tr><td>${k}</td><td>${v.qty}個</td><td>${yen(v.sales)}</td><td>${v.groups}組</td></tr>`).join('');
+  const invRows=inv.map(v=>`<tr><td>${esc(v.name)}</td><td>${v.in}個</td><td>${v.sold}個</td><td>${v.show}個</td><td>${v.store}個</td><td>${v.total}個</td></tr>`).join('');
+  let compare='';if(prev){const p=eventMetrics(prev);compare=`<div class="card"><div class="between"><h3>比較対象</h3><select onchange="setCompareEvent(this.value)" style="max-width:250px"><option value="">自動：前年の同名イベント</option>${(db.events||[]).filter(q=>q.id!==x.id).sort((a,b)=>String(b.start||'').localeCompare(String(a.start||''))).map(q=>`<option value="${q.id}" ${x.compareEventId===q.id?'selected':''}>${esc(q.name)}（${esc(q.start)}）</option>`).join('')}</select></div><div class="muted">現在の比較対象：${esc(prev.name)}</div><div class="analysis-grid"><div class="analysis-box"><div class="label">売上差</div><div class="value">${yen(m.total-p.total)}</div><div class="muted">今回 ${yen(m.total)} / 比較 ${yen(p.total)}</div></div><div class="analysis-box"><div class="label">販売数差</div><div class="value">${signedDiff(m.allq,p.allq)}個</div><div class="muted">今回 ${m.allq} / 比較 ${p.allq}</div></div><div class="analysis-box"><div class="label">1組平均差</div><div class="value">${yen(m.avg-p.avg)}</div><div class="muted">今回 ${yen(m.avg)} / 比較 ${yen(p.avg)}</div></div><div class="analysis-box"><div class="label">利益差</div><div class="value">${yen(m.profit-p.profit)}</div><div class="muted">今回 ${yen(m.profit)} / 比較 ${yen(p.profit)}</div></div></div></div>`;}else compare=`<div class="card"><h3>比較対象</h3><p class="muted">前年の同名イベントは自動検索できませんでした。上の比較対象から別イベントを選ぶこともできます。</p></div>`;
+  return `<div class="card"><div class="between"><h2>イベント振り返り・分析</h2><span class="pill">${x.eventClosed?'イベント締め済み':(x.end<jpToday()?'終了イベント':'開催中/予定')}</span></div>${x.eventClosed?`<div class="dangerbox">🔒 このイベントは締め済みです。過去データはそのまま残ります。</div><div class="row" style="margin-top:8px"><button class="primary" onclick="newEvent()">＋ 次のイベントを作る</button><button class="soft" onclick="location.hash='';db.tab='events';save();render()">イベント一覧へ</button></div>`:`<div class="row" style="margin-bottom:8px"><button class="warn" onclick="closeEvent()">🔒 このイベントを締める</button><button class="primary" onclick="location.hash='';db.tab='events';save();render()">イベント一覧へ</button></div>`}<p class="muted">${esc(x.name)}　${x.start} ～ ${x.end}</p><div class="analysis-grid"><div class="analysis-box"><div class="label">総売上</div><div class="value">${yen(m.total)}</div></div><div class="analysis-box"><div class="label">総販売数</div><div class="value">${m.allq}個</div></div><div class="analysis-box"><div class="label">利益</div><div class="value">${yen(m.profit)}</div></div><div class="analysis-box"><div class="label">1組平均購入額</div><div class="value">${yen(m.avg)}</div></div><div class="analysis-box"><div class="label">販売組数</div><div class="value">${m.groups}組</div></div><div class="analysis-box"><div class="label">経費・手数料</div><div class="value">${yen(m.fee)}</div></div></div></div>
+  ${compare}<div class="card"><div class="between"><h3>🏆 商品販売ランキング</h3><span class="tag">${esc(prefLabel('summaryProductSort',prefs.summaryProductSort))}${prefs.summaryProductLimit?` / 上位${prefs.summaryProductLimit}`:' / 全商品'}</span></div><div class="ranklist">${prodRows}</div></div>
   <div class="card"><h3>📅 日別売上・スタッフ</h3><table><tr><th>日付</th><th>数量</th><th>売上</th><th>組数</th><th>スタッフ</th></tr>${dailyRows}</table></div>
   <div class="card"><h3>⏰ 時間帯別</h3><table><tr><th>時間帯</th><th>数量</th><th>売上</th><th>組数</th></tr>${slotRows}</table></div>
   <div class="card"><h3>💳 支払方法別</h3><table><tr><th>支払方法</th><th>売上</th><th>割合</th></tr>${payRows}</table></div>
   <div class="card"><h3>📦 イベント終了時の在庫</h3><p class="muted">販売数・残在庫を見て、次回イベントの搬入量を考えるための記録です。</p><div class="stocktable"><table class="smalltable"><tr><th>商品</th><th>総搬入</th><th>販売</th><th>ショーケース</th><th>ストッカー</th><th>残在庫</th></tr>${invRows}</table></div></div>
-  <div class="card"><h3>🗑 余り・廃棄・持ち帰り</h3><p class="muted">締め時点の在庫とは別に、会社へ持ち帰った数・廃棄した数を記録できます。在庫から減りますが、売上・販売数には入りません。</p>${eventProductCatalog(x).map(p=>{const tb=(x.takeBackByDay||{});let a=0,w=0;Object.values(tb).forEach(v=>a+=num(v?.[p.id]));Object.values(x.wasteByDay||{}).forEach(v=>w+=num(v?.[p.id]));return `<div class="between"><span>${esc(p.name)}</span><span>持帰り ${a}個 ／ 廃棄 ${w}個</span></div>`}).join('')}</div>
-  <div class="card"><h3>📋 過去日の実績入力</h3><p class="muted">印刷済みの日報・振り返り資料から、会計履歴を作らずに日別実績だけを復元します。登録後は「手入力実績」と表示され、イベント集計に含まれます。</p><button class="primary" onclick="openManualDayPanel()">過去日の実績を入力</button><div id="manualDayPanel"></div></div>
-  <div class="card"><h3>イベント全体集計</h3><button class="soft" onclick="printSummary()">🖨 イベント集計を印刷</button></div>`;
+  <div class="card"><h3>🗑 余り・廃棄・持ち帰り</h3><p class="muted">会社へ持ち帰った数・廃棄した数は売上・販売数に入りません。</p>${eventProducts(x,true).map(p=>{const tb=x.takeBackByDay||{};let a=0,w=0;Object.values(tb).forEach(v=>a+=num(v?.[p.id]));Object.values(x.wasteByDay||{}).forEach(v=>w+=num(v?.[p.id]));return `<div class="between"><span>${esc(p.name)}</span><span>持帰り ${a}個 ／ 廃棄 ${w}個</span></div>`}).join('')}</div>
+  <div class="card"><h3>📋 過去日の実績入力</h3><p class="muted">印刷済み資料から日別実績だけを復元します。保存済みの手入力実績はバージョンアップ後も自動で維持します。</p><button class="primary" onclick="openManualDayPanel()">過去日の実績を入力</button><div id="manualDayPanel"></div></div>
+  <div class="card"><h3>⚙ 分析表示設定</h3><p class="muted">現在の並び順は「設定 → 表示・集計の並び順」で変更できます。</p><button class="soft" onclick="db.tab='settings';save();render()">表示設定を開く</button><button class="soft" onclick="printSummary()">🖨 イベント集計を印刷</button></div>`;
 }
 function openManualDayPanel(){
-  const x=e(),box=document.getElementById("manualDayPanel");if(!x||!box)return;
-  const d=selectedDay(x),r=x.manualDays?.[d]||{};const pay=r.pay||{};
-  box.innerHTML=`<div class="card" style="box-shadow:none;border:1px solid #dbeafe;margin-top:9px"><label>対象日</label><select id="manualDay">${dayList(x).map(z=>`<option ${z===d?'selected':''}>${z}</option>`).join('')}</select>
-  <div class="grid"><div><label>売上</label><input id="mdSales" type="number" value="${num(r.sales)}"></div><div><label>販売数</label><input id="mdQty" type="number" value="${num(r.qty)}"></div><div><label>販売組数</label><input id="mdGroups" type="number" value="${num(r.groups)}"></div><div><label>経費・手数料</label><input id="mdFee" type="number" value="${num(r.fee)}"></div></div>
-  <label>スタッフ（「、」区切り）</label><input id="mdStaff" value="${esc((r.staff||[]).join('、'))}" placeholder="例：田中、佐藤">
-  <h4>支払方法</h4>${db.payments.map(p=>`<label>${esc(p)}</label><input id="mdPay_${encodeURIComponent(p)}" type="number" value="${num(pay[p])}">`).join('')}
-  <h4>商品別販売数・売上</h4>${manualProductList(x,d).map(p=>{const q=(r.products||[]).find(v=>v.id===p.id)||{};return `<div class="grid"><div><label>${esc(p.name)} 数量</label><input id="mdQ_${p.id}" type="number" value="${num(q.qty)}"></div><div><label>${esc(p.name)} 売上</label><input id="mdS_${p.id}" type="number" value="${num(q.sales)}"></div></div>`}).join('')}
-  <label>メモ</label><textarea id="mdNote" rows="2" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:9px">${esc(r.note||'')}</textarea>
-  <div class="row" style="margin-top:9px"><button class="primary" onclick="saveManualDay()">手入力実績を保存</button><button class="bad" onclick="clearManualDay(document.getElementById('manualDay').value)">この日の手入力を削除</button><button class="soft" onclick="document.getElementById('manualDayPanel').innerHTML=''">閉じる</button></div></div>`;
+  const x=e(),box=document.getElementById("manualDayPanel");if(!x||!box)return;const d=selectedDay(x),r=x.manualDays?.[d]||{},pay=r.pay||{},plist=manualProductList(x,d),pays=paymentListForEvent(x);
+  box.innerHTML=`<div class="card" style="box-shadow:none;border:1px solid #dbeafe;margin-top:9px"><label>対象日</label><select id="manualDay">${dayList(x).map(z=>`<option ${z===d?'selected':''}>${z}</option>`).join('')}</select><div class="grid"><div><label>売上</label><input id="mdSales" type="number" value="${num(r.sales)}"></div><div><label>販売数</label><input id="mdQty" type="number" value="${num(r.qty)}"></div><div><label>販売組数</label><input id="mdGroups" type="number" value="${num(r.groups)}"></div><div><label>経費・手数料</label><input id="mdFee" type="number" value="${num(r.fee)}"></div></div><label>スタッフ（「、」区切り）</label><input id="mdStaff" value="${esc((r.staff||[]).join('、'))}" placeholder="例：田中、佐藤"><h4>支払方法</h4>${pays.map(p=>`<label>${esc(p)}</label><input id="mdPay_${encodeURIComponent(p)}" type="number" value="${num(pay[p])}">`).join('')}<h4>商品別販売数・売上</h4>${plist.map(p=>{const q=(r.products||[]).find(v=>v.id===p.id)||{};return `<div class="grid"><div><label>${esc(p.name)} 数量</label><input id="mdQ_${p.id}" type="number" value="${num(q.qty)}"></div><div><label>${esc(p.name)} 売上</label><input id="mdS_${p.id}" type="number" value="${num(q.sales)}"></div></div>`}).join('')}<label>メモ</label><textarea id="mdNote" rows="2" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:9px">${esc(r.note||'')}</textarea><div class="row" style="margin-top:9px"><button class="primary" onclick="saveManualDay()">手入力実績を保存</button><button class="bad" onclick="clearManualDay(document.getElementById('manualDay').value)">この日の手入力を削除</button><button class="soft" onclick="document.getElementById('manualDayPanel').innerHTML=''">閉じる</button></div></div>`;
 }
 function settings(x){
-  return `<div class="card"><h2>${x?"イベント設定":"新規イベント設定"}</h2>${x?.eventClosed?`<div class="dangerbox" style="margin-bottom:10px"><b>🔒 このイベントは締め済みです</b><p class="muted" style="margin:5px 0 0">締め済みイベントは過去データを守るため、日付・売上・在庫などを変更できません。次回イベントは新規イベントとして作成してください。</p><button class="primary" style="margin-top:8px" onclick="newEvent()">＋ 新しいイベントを作る</button></div>`:""}<div class="grid">
-  <div><label>イベント名</label><input id="ename" value="${esc(x?.name||"")}"></div>
-  <div><label>時間帯集計</label><select id="slot"><option value="1" ${(x?.slot||1)==1?"selected":""}>1時間ごと</option><option value="2" ${(x?.slot||1)==2?"selected":""}>2時間ごと</option><option value="3" ${(x?.slot||1)==3?"selected":""}>3時間ごと</option></select></div>
-  <div><label>開始日</label><input id="start" type="date" value="${x?.start||jpToday()}"></div><div><label>終了日</label><input id="end" type="date" value="${x?.end||jpToday()}"></div>
-  <div><label>販売開始</label><input id="open" type="time" value="${x?.open||"10:00"}"></div><div><label>販売終了</label><input id="close" type="time" value="${x?.close||"17:00"}"></div>
-  <div><label>経費入力</label><select id="feeMode"><option value="daily" ${x?.feeMode!=="total"?"selected":""}>日ごと</option><option value="total" ${x?.feeMode==="total"?"selected":""}>イベント合算</option></select></div>
-  <div><label>合算額</label><input id="feeTotal" type="number" value="${x?.feeTotal||0}"></div></div>
-  <button class="primary" style="margin-top:9px" ${x?.eventClosed?'disabled':''} onclick="saveEvent()">保存</button>${x?` <button class="bad" onclick="delEvent()">イベント削除</button>`:""}${x&&!x.eventClosed?` <button class="warn" style="margin-top:8px" onclick="closeEvent()">🔒 イベントを締める</button>`:""}</div>
-  ${x?`<div class="card"><h3>イベント価格</h3><p class="muted">変更後の会計から新価格。過去の会計価格は変わりません。</p>
-  ${db.products.map(p=>`<div class="row" style="margin:6px 0"><span style="flex:1">${esc(p.name)}</span><input id="ep_${p.id}" type="number" value="${x.prices?.[p.id]??p.price}"></div>`).join("")}
-  <button class="soft" onclick="savePrices()">保存</button></div>`:""}
-  <div class="card"><h3>商品マスター</h3>${db.products.map(p=>`<div class="row" style="margin:6px 0"><input id="n_${p.id}" value="${esc(p.name)}"><input id="p_${p.id}" type="number" value="${p.price}"><button class="soft" onclick="saveProduct('${p.id}')">保存</button><button class="bad" onclick="removeProduct('${p.id}')">削除</button></div>`).join("")}
-  <button class="soft" onclick="addProduct()">＋商品追加</button></div>
-  <div class="card"><h3>スタッフ</h3>${db.staff.map((s,i)=>`<div class="row" style="margin:6px 0"><input id="s_${i}" value="${esc(s)}"><button class="soft" onclick="saveStaff(${i})">保存</button><button class="bad" onclick="removeStaff(${i})">削除</button></div>`).join("")}
-  <button class="soft" onclick="addStaff()">＋追加</button></div>
-  <div class="card"><h3>支払方法</h3>${db.payments.map((s,i)=>`<div class="row" style="margin:6px 0"><input id="m_${i}" value="${esc(s)}"><button class="soft" onclick="savePay(${i})">保存</button><button class="bad" onclick="removePay(${i})">削除</button></div>`).join("")}
-  <button class="soft" onclick="addPay()">＋追加</button></div>
-  <div class="card"><h3>クラウド同期</h3><p class="muted">ログイン中：${esc(cloudUser?.email||"未ログイン")}</p>${cloudUser?`<button class="soft" onclick="cloudLogout()">ログアウト</button>`:`<p class="muted">ログインすると、この端末の会計データをPC・iPhone・Androidで共有できます。</p>`}</div>
-  <div class="card"><h3>データ保護</h3><p class="muted">イベント終了後などにバックアップしてください。</p><button class="soft" onclick="backup()">バックアップ保存</button>
-  <button class="soft" style="margin-top:6px" onclick="diagnoseData()">🔎 データ・在庫を診断</button>
-  <label>バックアップ復元</label><input type="file" accept=".json" onchange="restore(this)">
-  <div class="dangerbox" style="margin-top:14px"><b>🧹 データ初期化</b><p class="muted">何を消すか選んで初期化できます。クラウド同期中の場合は、選択した内容がPC・iPhone側にも反映されます。</p><button class="bad" style="width:100%" onclick="openResetPanel()">⚠ 初期化メニューを開く</button><div id="resetPanel"></div></div></div>
+  ensureViewPrefs();const master=orderedMasterProducts(),staffs=db.staff||[],pays=db.payments||[];
+  const globalOrderRows=master.map((p,i)=>`<div class="orderrow"><div><b>${esc(p.name)}</b><div class="muted">標準価格 ${yen(p.price)}</div></div><div class="orderactions"><button class="soft" ${i===0?'disabled':''} onclick="moveMasterProduct('${p.id}',-1)">↑</button><button class="soft" ${i===master.length-1?'disabled':''} onclick="moveMasterProduct('${p.id}',1)">↓</button><button class="soft" onclick="saveProduct('${p.id}')">保存</button><button class="bad" onclick="removeProduct('${p.id}')">削除</button></div></div>`).join('');
+  const eventLineup=x?eventProducts(x,true).map((p,i)=>`<div class="orderrow ${p.active===false?'disabled-line':''}"><div><div class="row"><b>${esc(p.name)}</b>${p.active===false?'<span class="pill">非表示</span>':''}</div><div class="muted">このイベント価格：${yen(x.prices?.[p.id]??p.price)}</div><div class="grid" style="margin-top:5px"><input id="evn_${p.id}" value="${esc(p.name)}" ${x.eventClosed?'disabled':''}><input id="evp_${p.id}" type="number" min="0" value="${x.prices?.[p.id]??p.price}" ${x.eventClosed?'disabled':''}></div></div><div class="orderactions"><button class="soft" ${x.eventClosed||i===0?'disabled':''} onclick="moveEventProduct('${p.id}',-1)">↑</button><button class="soft" ${x.eventClosed||i===eventProducts(x,true).length-1?'disabled':''} onclick="moveEventProduct('${p.id}',1)">↓</button><button class="soft" ${x.eventClosed?'disabled':''} onclick="saveEventProduct('${p.id}')">保存</button><button class="bad" ${x.eventClosed?'disabled':''} onclick="removeEventProduct('${p.id}')">外す</button></div></div>`).join(''):'<p class="muted">イベントを開くと、そのイベント専用の商品ラインナップを設定できます。</p>';
+  const availableMaster=(x?master.filter(p=>!eventProducts(x,true).some(q=>q.id===p.id)):master);
+  const staffRows=staffs.map((s,i)=>`<div class="orderrow"><input id="s_${i}" value="${esc(s)}"><div class="orderactions"><button class="soft" ${i===0?'disabled':''} onclick="moveStaff(${i},-1)">↑</button><button class="soft" ${i===staffs.length-1?'disabled':''} onclick="moveStaff(${i},1)">↓</button><button class="soft" onclick="saveStaff(${i})">保存</button><button class="bad" onclick="removeStaff(${i})">削除</button></div></div>`).join('');
+  const payRows=pays.map((s,i)=>`<div class="orderrow"><input id="m_${i}" value="${esc(s)}"><div class="orderactions"><button class="soft" ${i===0?'disabled':''} onclick="movePayment(${i},-1)">↑</button><button class="soft" ${i===pays.length-1?'disabled':''} onclick="movePayment(${i},1)">↓</button><button class="soft" onclick="savePay(${i})">保存</button><button class="bad" onclick="removePay(${i})">削除</button></div></div>`).join('');
+  const vp=ensureViewPrefs();
+  return `<div class="card"><h2>${x?"イベント設定":"商品・設定"}</h2>${x?.eventClosed?`<div class="dangerbox" style="margin-bottom:10px"><b>🔒 このイベントは締め済みです</b><p class="muted" style="margin:5px 0 0">締め済みイベントは売上・在庫・商品ラインナップ・価格を変更できません。</p><button class="primary" style="margin-top:8px" onclick="newEvent()">＋ 新しいイベントを作る</button></div>`:""}${x?`<div class="grid"><div><label>イベント名</label><input id="ename" value="${esc(x.name||'')}" ${x.eventClosed?'disabled':''}></div><div><label>時間帯集計</label><select id="slot" ${x.eventClosed?'disabled':''}><option value="1" ${Number(x.slot||1)===1?'selected':''}>1時間ごと</option><option value="2" ${Number(x.slot||1)===2?'selected':''}>2時間ごと</option><option value="3" ${Number(x.slot||1)===3?'selected':''}>3時間ごと</option></select></div><div><label>開始日</label><input id="start" type="date" value="${x.start||jpToday()}" ${x.eventClosed?'disabled':''}></div><div><label>終了日</label><input id="end" type="date" value="${x.end||jpToday()}" ${x.eventClosed?'disabled':''}></div><div><label>販売開始</label><input id="open" type="time" value="${x.open||'10:00'}" ${x.eventClosed?'disabled':''}></div><div><label>販売終了</label><input id="close" type="time" value="${x.close||'17:00'}" ${x.eventClosed?'disabled':''}></div><div><label>経費入力</label><select id="feeMode" ${x.eventClosed?'disabled':''}><option value="daily" ${x.feeMode!=='total'?'selected':''}>日ごと</option><option value="total" ${x.feeMode==='total'?'selected':''}>イベント合算</option></select></div><div><label>合算額</label><input id="feeTotal" type="number" value="${x.feeTotal||0}" ${x.eventClosed?'disabled':''}></div></div><div class="row" style="margin-top:9px"><button class="primary" ${x.eventClosed?'disabled':''} onclick="saveEvent()">保存</button><button class="soft" onclick="duplicateEvent()">📄 このイベントを複製</button><button class="bad" onclick="delEvent()">イベント削除</button>${!x.eventClosed?`<button class="warn" onclick="closeEvent()">🔒 イベントを締める</button>`:''}</div>`:`<div class="notice">商品マスターの変更は新規イベントの標準設定です。過去イベントや、すでに作成したイベントの商品名・価格・並び順は変わりません。</div>`}</div>
+  ${x?`<div class="card"><h3>📦 このイベントの商品ラインナップ</h3><p class="muted">ここだけの名前・価格・順番です。商品マスターを後から変更しても、このイベントには反映されません。</p>${eventLineup}<div class="row" style="margin-top:8px">${availableMaster.length?`<select id="addEventProductSelect">${availableMaster.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select><button class="primary" onclick="addMasterToEvent()">＋このイベントに追加</button>`:'<span class="muted">追加できる商品はありません。</span>'}</div></div>`:''}
+  <div class="card"><h3>🧾 商品マスター（新規イベント用）</h3><p class="muted">名前・標準価格を変更しても、過去・既存イベントのデータは変更しません。↑↓で新規イベントの標準順を変更できます。</p><div class="orderlist">${globalOrderRows}</div><button class="soft" style="margin-top:8px" onclick="addProduct()">＋商品追加</button></div>
+  <div class="card"><h3>👥 スタッフ</h3><p class="muted">↑↓で表示順を変更。過去日の記録はそのまま残ります。</p><div class="orderlist">${staffRows}</div><button class="soft" style="margin-top:8px" onclick="addStaff()">＋追加</button></div>
+  <div class="card"><h3>💳 支払方法</h3><p class="muted">↑↓で会計ボタン・入力欄の順番を変更。過去会計の支払方法は履歴から消しません。</p><div class="orderlist">${payRows}</div><button class="soft" style="margin-top:8px" onclick="addPay()">＋追加</button></div>
+  <div class="card"><h3>🔧 表示・集計の並び順</h3><div class="settings-row"><span>イベント一覧</span><select onchange="setViewPref('eventListSort',this.value)"><option value="newest" ${vp.eventListSort==='newest'?'selected':''}>新しい順</option><option value="oldest" ${vp.eventListSort==='oldest'?'selected':''}>古い順</option><option value="name" ${vp.eventListSort==='name'?'selected':''}>名前順</option><option value="sales-desc" ${vp.eventListSort==='sales-desc'?'selected':''}>売上順</option></select></div><div class="settings-row"><span>会計履歴</span><select onchange="setViewPref('historySort',this.value)"><option value="time-asc" ${vp.historySort==='time-asc'?'selected':''}>古い→新しい</option><option value="time-desc" ${vp.historySort==='time-desc'?'selected':''}>新しい→古い</option></select></div><div class="settings-row"><span>在庫一覧</span><select onchange="setViewPref('inventorySort',this.value)"><option value="custom" ${vp.inventorySort==='custom'?'selected':''}>商品登録順</option><option value="name-asc" ${vp.inventorySort==='name-asc'?'selected':''}>商品名順</option><option value="sold-desc" ${vp.inventorySort==='sold-desc'?'selected':''}>販売数順</option><option value="remain-desc" ${vp.inventorySort==='remain-desc'?'selected':''}>残在庫順</option></select></div><div class="settings-row"><span>商品ランキング</span><select onchange="setViewPref('summaryProductSort',this.value)"><option value="qty-desc" ${vp.summaryProductSort==='qty-desc'?'selected':''}>販売数順</option><option value="sales-desc" ${vp.summaryProductSort==='sales-desc'?'selected':''}>売上順</option><option value="custom" ${vp.summaryProductSort==='custom'?'selected':''}>商品登録順</option><option value="name-asc" ${vp.summaryProductSort==='name-asc'?'selected':''}>商品名順</option></select></div><div class="settings-row"><span>ランキング表示件数</span><select onchange="setViewPref('summaryProductLimit',this.value)"><option value="5" ${Number(vp.summaryProductLimit)===5?'selected':''}>上位5</option><option value="10" ${Number(vp.summaryProductLimit)===10?'selected':''}>上位10</option><option value="0" ${Number(vp.summaryProductLimit)===0?'selected':''}>全商品</option></select></div><div class="settings-row"><span>日別集計</span><select onchange="setViewPref('summaryDaySort',this.value)"><option value="date-asc" ${vp.summaryDaySort==='date-asc'?'selected':''}>日付順</option><option value="sales-desc" ${vp.summaryDaySort==='sales-desc'?'selected':''}>売上順</option><option value="qty-desc" ${vp.summaryDaySort==='qty-desc'?'selected':''}>販売数順</option></select></div><div class="settings-row"><span>支払方法集計</span><select onchange="setViewPref('summaryPaymentSort',this.value)"><option value="sales-desc" ${vp.summaryPaymentSort==='sales-desc'?'selected':''}>売上順</option><option value="name-asc" ${vp.summaryPaymentSort==='name-asc'?'selected':''}>名前順</option></select></div><div class="settings-row"><span>時間帯集計</span><select onchange="setViewPref('summarySlotSort',this.value)"><option value="time-asc" ${vp.summarySlotSort==='time-asc'?'selected':''}>時間順</option><option value="sales-desc" ${vp.summarySlotSort==='sales-desc'?'selected':''}>売上順</option><option value="qty-desc" ${vp.summarySlotSort==='qty-desc'?'selected':''}>販売数順</option></select></div><label style="display:flex;align-items:center;gap:8px;font-weight:500;margin-top:8px"><input type="checkbox" ${vp.summaryShowZero?'checked':''} onchange="setViewPref('summaryShowZero',this.checked)" style="width:auto"> 商品ランキングに売上0の商品も表示</label></div>
+  <div class="card"><h3>☁ クラウド同期</h3><p class="muted">ログイン中：${esc(cloudUser?.email||"未ログイン")}</p>${cloudUser?`<button class="soft" onclick="cloudLogout()">ログアウト</button>`:`<p class="muted">ログインすると、このアプリのデータをPC・iPhone・Androidで共有できます。</p>`}</div>
+  <div class="card"><h3>🛡 データ保護</h3><p class="muted">バックアップ・診断・初期化をここから行えます。締め済みイベントは通常の初期化対象から保護されます。</p><button class="soft" onclick="backup()">バックアップ保存</button><button class="soft" style="margin-top:6px" onclick="diagnoseData()">🔎 データ・在庫を診断</button><label>バックアップ復元</label><input type="file" accept=".json" onchange="restore(this)"><div class="dangerbox" style="margin-top:14px"><b>🧹 データ初期化</b><p class="muted">何を消すか選んで初期化できます。クラウド同期中も既存の同期方式を維持します。</p><button class="bad" style="width:100%" onclick="openResetPanel()">⚠ 初期化メニューを開く</button><div id="resetPanel"></div></div></div>
   <div class="notice">iPhone運用：HTTPSで公開したページをSafariで開き、「共有 → ホーム画面に追加 → Webアプリとして開く」でホーム画面に追加します。</div>`;
 }
 function newEvent(){
-  db.events.unshift({id:"e"+Date.now(),name:"新しいイベント",start:jpToday(),end:jpToday(),open:"10:00",close:"17:00",slot:1,
-    feeMode:"daily",feeTotal:0,fees:{},stock:[],stockMoves:[],undoStack:[],transactions:[],prices:Object.fromEntries(db.products.map(p=>[p.id,p.price])),closed:{},staffByDay:{},dayNotes:{},dayArchives:{},manualDays:{},takeBackByDay:{},wasteByDay:{},resetUndoStack:[],eventClosed:false,closedAt:null,cart:[]});
-  location.hash=db.events[0].id;db.tab="settings";save();render();
+  const plist=orderedMasterProducts();
+  const id="e"+Date.now();
+  const catalog=plist.map(p=>({id:p.id,name:p.name,price:Number(p.price||0),active:true}));
+  const ev={id,name:"新しいイベント",start:jpToday(),end:jpToday(),open:"10:00",close:"17:00",slot:1,feeMode:"daily",feeTotal:0,fees:{},stock:[],stockMoves:[],undoStack:[],transactions:[],productCatalog:catalog,productOrder:catalog.map(p=>p.id),prices:Object.fromEntries(catalog.map(p=>[p.id,p.price])),closed:{},staffByDay:{},dayNotes:{},dayArchives:{},manualDays:{},takeBackByDay:{},wasteByDay:{},resetUndoStack:[],eventClosed:false,closedAt:null,cart:[]};
+  db.events.unshift(ev);location.hash=id;db.tab="settings";save();render();
 }
-function saveEvent(){
-  let x=e();if(!x){newEvent();return}
-  if(x.eventClosed)return alert("締め済みイベントは設定を変更できません。新しいイベントを作成してください。");
-  const st=document.getElementById("start").value,en=document.getElementById("end").value;
-  if(!st||!en||en<st)return alert("開催期間を正しく入力してください");
-  const op=document.getElementById("open").value,cl=document.getElementById("close").value;
-  if(!op||!cl||op>=cl)return alert("販売開始・終了時刻を正しく入力してください（終了は開始より後）");
-  Object.assign(x,{name:document.getElementById("ename").value,start:st,end:en,open:op,
-    close:cl,slot:Number(document.getElementById("slot").value),
-    feeMode:document.getElementById("feeMode").value,feeTotal:Number(document.getElementById("feeTotal").value)||0});
-  x.prices=x.prices||{};db.products.forEach(p=>x.prices[p.id]=x.prices[p.id]??p.price);
-  save();db.tab="sale";render();
+function duplicateEvent(){
+  const x=e();if(!x)return;if(!confirm(`「${x.name}」を新しいイベントとして複製しますか？\n商品ラインナップ・価格・時間設定だけを引き継ぎ、売上・在庫・日報・経費・締め状態は引き継ぎません。`))return;
+  ensureEventProductCatalog(x);const id="e"+Date.now(),catalog=clone(x.productCatalog||[]);const ev={id,name:x.name+"（複製）",start:jpToday(),end:jpToday(),open:x.open,close:x.close,slot:x.slot,feeMode:x.feeMode,feeTotal:0,fees:{},stock:[],stockMoves:[],undoStack:[],transactions:[],productCatalog:catalog,productOrder:clone(x.productOrder||catalog.map(p=>p.id)),prices:clone(x.prices||{}),closed:{},staffByDay:{},dayNotes:{},dayArchives:{},manualDays:{},takeBackByDay:{},wasteByDay:{},resetUndoStack:[],eventClosed:false,closedAt:null,cart:[]};
+  db.events.unshift(ev);location.hash=id;db.tab="settings";save();render();toast("イベント設定を複製しました");
 }
+function saveEvent(){let x=e();if(!x){newEvent();return}if(x.eventClosed)return alert("締め済みイベントの設定は変更できません。");const st=document.getElementById("start").value,en=document.getElementById("end").value;if(!st||!en||en<st)return alert("開催期間を正しく入力してください");const op=document.getElementById("open").value,cl=document.getElementById("close").value;if(!op||!cl||op>=cl)return alert("販売開始・終了時刻を正しく入力してください（終了は開始より後）");pushUndo(x,"イベント設定を変更");Object.assign(x,{name:(document.getElementById("ename").value||x.name).trim(),start:st,end:en,open:op,close:cl,slot:Number(document.getElementById("slot").value),feeMode:document.getElementById("feeMode").value,feeTotal:Number(document.getElementById("feeTotal").value)||0});ensureEventProductCatalog(x);save();db.tab="sale";render();}
 function closeEvent(){
   const x=e();if(!x)return;
   if(x.eventClosed)return alert("このイベントはすでに締め済みです。");
@@ -1235,36 +1104,19 @@ function closeEvent(){
 }
 function delEvent(){let x=e();if(!x)return;if(x.eventClosed&&!confirm("締め済みイベントです。履歴も含めて完全に削除します。バックアップ済みですか？"))return;if(confirm("このイベントの全データを削除しますか？\n会計・在庫・日報・締め済み履歴もすべて削除されます。")){db.events=db.events.filter(q=>q.id!==x.id);location.hash="";db.tab="events";save();render()}}
 function savePrices(){let x=e();if(!x)return;if(x.eventClosed)return alert("締め済みイベントの価格は変更できません。");x.prices=x.prices||{};db.products.forEach(p=>x.prices[p.id]=Math.max(0,Number(document.getElementById("ep_"+p.id).value)||0));save();render()}
-function saveProduct(id){
-  let p=db.products.find(q=>q.id===id);if(!p)return;
-  const name=(document.getElementById("n_"+id)?.value||"").trim(),price=Number(document.getElementById("p_"+id)?.value);
-  if(!name)return alert("商品名を入力してください。");
-  if(!Number.isFinite(price)||price<0)return alert("価格は0円以上で入力してください。");
-  if(db.products.some(q=>q.id!==id&&String(q.name).trim()===name))return alert("同じ商品名がすでにあります。");
-  p.name=name;p.price=Math.floor(price);save();render();
-}
-function addProduct(){db.products.push({id:"p"+Date.now(),name:"新商品",price:400});save();render()}
-function removeProduct(id){
-  const p=db.products.find(q=>q.id===id);if(!p)return;
-  const used=[];
-  (db.events||[]).forEach(ev=>{
-    if((ev.transactions||[]).some(t=>(t.items||[]).some(i=>i.productId===id)) || (ev.stock||[]).some(s=>s.productId===id) || Object.values(ev.manualDays||{}).some(d=>(d.products||[]).some(i=>i.id===id))) used.push(ev.name||ev.id);
-  });
-  if(used.length)return alert(`「${p.name}」は過去または現在のイベントで使用されています。\n\n${used.slice(0,5).join("\n")}\n\n履歴を壊さないため、使用中の商品は商品マスターから削除できません。\n今後使わない場合は、商品名を「販売終了」などに変更してください。`);
-  if(!confirm(`商品マスターから「${p.name}」を削除しますか？\nこの商品を使っていないイベントのデータには影響しません。`))return;
-  db.products=db.products.filter(q=>q.id!==id);
-  (db.events||[]).forEach(ev=>{if(ev.prices)delete ev.prices[id]});
-  save();render();toast(`商品「${p.name}」を削除しました`);
-}
-function saveStaff(i){const v=(document.getElementById("s_"+i)?.value||"").trim();if(!v)return alert("スタッフ名を入力してください。");if(db.staff.some((s,j)=>j!==i&&String(s).trim()===v))return alert("同じスタッフ名がすでにあります。");db.staff[i]=v;save();render()}
-function removeStaff(i){if(db.staff.length<=1)return alert("スタッフは最低1名残してください。");if(!confirm(`${db.staff[i]}をスタッフマスターから削除しますか？\n過去日の記録は残ります。`))return;db.staff.splice(i,1);save();render()}
-function addStaff(){db.staff.push("新スタッフ");save();render()}
-function savePay(i){const v=(document.getElementById("m_"+i)?.value||"").trim();if(!v)return alert("支払方法を入力してください。");if(db.payments.some((s,j)=>j!==i&&String(s).trim()===v))return alert("同じ支払方法がすでにあります。");db.payments[i]=v;save();render()}
-function removePay(i){if(db.payments.length<=1)return alert("支払方法は最低1つ残してください。");if(!confirm(`${db.payments[i]}を削除しますか？\n過去の会計記録は残ります。`))return;db.payments.splice(i,1);save();render()}
-function addPay(){db.payments.push("新しい支払方法");save();render()}
-function defaultDb(){
-  return {events:[],products:base.map(x=>({id:x[0],name:x[1],price:x[2]})),staff:["スタッフ1","スタッフ2"],payments:["現金","PayPay"],manualBackups:{},manualDeleted:{},tab:"events"};
-}
+function saveProduct(id){const p=db.products.find(q=>q.id===id);if(!p)return;const name=(document.getElementById("n_"+id)?.value||"").trim(),price=Number(document.getElementById("p_"+id)?.value);if(!name)return alert("商品名を入力してください。");if(!Number.isFinite(price)||price<0)return alert("価格は0円以上で入力してください。");if(db.products.some(q=>q.id!==id&&String(q.name).trim()===name))return alert("同じ商品名がすでにあります。");p.name=name;p.price=Math.floor(price);save();render();toast(`商品マスター「${name}」を保存しました。既存イベントには影響しません`);}
+function addProduct(){const id="p"+Date.now();db.products.push({id,name:"新商品",price:400});db.productOrder=normalizeOrder(db.productOrder,db.products);save();render();}
+function removeProduct(id){const p=db.products.find(q=>q.id===id);if(!p)return;const used=[];(db.events||[]).forEach(ev=>{if((ev.transactions||[]).some(t=>(t.items||[]).some(i=>i.productId===id))||(ev.stock||[]).some(s=>s.productId===id)||Object.values(ev.manualDays||{}).some(d=>(d.products||[]).some(i=>i.id===id)))used.push(ev.name||ev.id);});if(used.length)return alert(`「${p.name}」は過去または現在のイベントで使用されています。\n\n${used.slice(0,5).join("\n")}\n\n履歴を壊さないため、商品マスターから削除できません。今後使わない場合は「販売終了」などに変更してください。`);if(!confirm(`商品マスターから「${p.name}」を削除しますか？\nこの商品を使っていない既存イベントには影響しません。`))return;db.products=db.products.filter(q=>q.id!==id);db.productOrder=normalizeOrder(db.productOrder,db.products);save();render();toast(`商品「${p.name}」を削除しました`);}
+function addMasterToEvent(){const x=e(),pid=document.getElementById('addEventProductSelect')?.value;if(!x||x.eventClosed||!pid)return;const p=db.products.find(q=>q.id===pid);if(!p)return;ensureEventProductCatalog(x);if(eventProductById(x,pid))return alert("この商品はすでにイベントへ登録されています。");x.productCatalog.push({id:p.id,name:p.name,price:Number(p.price||0),active:true});x.productOrder=normalizeOrder(x.productOrder,x.productCatalog);x.prices=x.prices||{};x.prices[p.id]=Number(p.price||0);save();render();toast(`「${p.name}」をこのイベントに追加しました`);}
+function saveEventProduct(id){const x=e(),p=eventProductById(x,id);if(!x||!p||x.eventClosed)return;const name=(document.getElementById('evn_'+id)?.value||'').trim(),price=Number(document.getElementById('evp_'+id)?.value);if(!name)return alert("商品名を入力してください。");if(!Number.isFinite(price)||price<0)return alert("価格は0円以上で入力してください。");if(eventProducts(x,true).some(q=>q.id!==id&&q.active!==false&&q.name===name))return alert("このイベント内で同じ商品名があります。");pushUndo(x,`イベント商品「${p.name}」の設定変更`);p.name=name;p.price=Math.floor(price);p.active=true;x.prices=x.prices||{};x.prices[id]=p.price;save();render();toast(`このイベントの商品設定を保存しました`);}
+function removeEventProduct(id){const x=e(),p=eventProductById(x,id);if(!x||!p||x.eventClosed)return;const used=(x.transactions||[]).some(t=>(t.items||[]).some(i=>i.productId===id))||(x.stock||[]).some(s=>s.productId===id)||Object.values(x.manualDays||{}).some(d=>(d.products||[]).some(i=>i.id===id))||(x.cart||[]).some(i=>i.productId===id);if(used)return alert(`「${p.name}」はこのイベントですでに使用されています。\n履歴・在庫を守るためイベントから外せません。`);if(!confirm(`「${p.name}」をこのイベントのラインナップから外しますか？\n商品マスター自体は残ります。`))return;x.productCatalog=x.productCatalog.filter(q=>q.id!==id);x.productOrder=(x.productOrder||[]).filter(q=>q!==id);if(x.prices)delete x.prices[id];save();render();toast(`「${p.name}」をイベントから外しました`);}
+function saveStaff(i){const v=(document.getElementById("s_"+i)?.value||"").trim();if(!v)return alert("スタッフ名を入力してください。");if(db.staff.some((s,j)=>j!==i&&String(s).trim()===v))return alert("同じスタッフ名がすでにあります。");db.staff[i]=v;save();render();}
+function removeStaff(i){if(db.staff.length<=1)return alert("スタッフは最低1名残してください。");if(!confirm(`${db.staff[i]}をスタッフマスターから削除しますか？\n過去日の記録は残ります。`))return;db.staff.splice(i,1);save();render();}
+function addStaff(){db.staff.push("新スタッフ");save();render();}
+function savePay(i){const v=(document.getElementById("m_"+i)?.value||"").trim();if(!v)return alert("支払方法を入力してください。");if(db.payments.some((s,j)=>j!==i&&String(s).trim()===v))return alert("同じ支払方法がすでにあります。");db.payments[i]=v;save();render();}
+function removePay(i){if(db.payments.length<=1)return alert("支払方法は最低1つ残してください。");if(!confirm(`${db.payments[i]}を削除しますか？\n過去の会計記録は残ります。`))return;db.payments.splice(i,1);save();render();}
+function addPay(){db.payments.push("新しい支払方法");save();render();}
+function defaultDb(){return {events:[],products:base.map(x=>({id:x[0],name:x[1],price:x[2]})),productOrder:base.map(x=>x[0]),staff:["スタッフ1","スタッフ2"],payments:["現金","PayPay"],viewPrefs:{...DEFAULT_VIEW_PREFS},manualBackups:{},manualDeleted:{},tab:"events"};}
 function resetSnapshotLabel(x){
   if(!x)return "現在のイベント";
   return `${x.name||"現在のイベント"}（${x.start||""} ～ ${x.end||""}）`;
@@ -1309,21 +1161,8 @@ function executeReset(){
 }
 
 function resetAll(){openResetPanel();}
-function backup(){
-  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(db,null,2)],{type:"application/json"}));
-  a.download="tart-event-backup-"+jpToday()+".json";a.click();
-}
-function restore(i){
-  const f=i.files[0];if(!f)return;
-  const r=new FileReader();r.onload=()=>{
-    try{
-      const v=JSON.parse(r.result);
-      if(!v||typeof v!=="object"||!Array.isArray(v.events)||!Array.isArray(v.products))throw new Error("形式不正");
-      if(!confirm("バックアップの内容で現在のデータを上書きします。\n\n現在のデータは失われます。先に現在のバックアップを保存しましたか？"))return;
-      db=v;normalizeDb();save();render();alert("復元しました")
-    }catch(_){alert("読み込めないバックアップです。タルト販売管理から保存したJSONを選択してください。")}
-  };r.readAsText(f);
-}
+function backup(){const payload={format:"tart-event-manager",schemaVersion:APP_SCHEMA_VERSION,backupAt:new Date().toISOString(),data:db};const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:"application/json"}));a.download="tart-event-backup-v11-"+jpToday()+".json";a.click();}
+function restore(i){const f=i.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{let v=JSON.parse(r.result);if(v?.data?.events&&v?.data?.products)v=v.data;if(!v||typeof v!=="object"||!Array.isArray(v.events)||!Array.isArray(v.products))throw new Error("形式不正");if(!confirm("バックアップの内容で現在のデータを上書きします。\n\n現在のデータは失われます。先に現在のバックアップを保存しましたか？"))return;db=v;normalizeDb();save();render();alert("復元しました")}catch(_){alert("読み込めないバックアップです。タルト販売管理から保存したJSONを選択してください。")}};r.readAsText(f)}
 function diagnoseData(){
   const issues=[],warnings=[];
   if(!db||!Array.isArray(db.events))issues.push("イベントデータが壊れています。");
@@ -1336,6 +1175,7 @@ function diagnoseData(){
   });
   let txCount=0;
   (db.events||[]).forEach(ev=>{
+    ensureEventProductCatalog(ev);
     const m=stockMap(ev);
     Object.entries(m).forEach(([pid,v])=>{
       if(v.show<0||v.store<0)issues.push(`${ev.name||"イベント"}：在庫がマイナス（${pid}）`);
@@ -1365,13 +1205,8 @@ function printDaily(d){
   ${(dd.products||[]).map(p=>`<p>${esc(p.name)}：${num(p.qty)}個　${yen(p.sales)}</p>`).join("")}<h3>手数料・経費：${yen(dd.fee)}</h3><h2>利益：${yen(dd.sales-num(dd.fee))}</h2></div>`;
   window.print();app.innerHTML=old;
 }
-function printSummary(){
-  const x=e(),app=document.getElementById("app"),old=app.innerHTML,m=eventMetrics(x);
-  app.innerHTML=`<div class="printarea"><h1>${esc(x.name)} イベント集計</h1><p>${x.start} ～ ${x.end}</p>
-  <h2>総売上：${yen(m.total)}</h2><h2>手数料・経費：${yen(m.fee)}</h2><h2>利益：${yen(m.profit)}</h2>
-  ${m.days.map(d=>`<p>${d.day}　売上 ${yen(d.sales)}　${d.qty}個　${d.groups}組</p>`).join("")}</div>`;
-  window.print();app.innerHTML=old;
-}
+function printSummary(){const x=e(),app=document.getElementById("app"),old=app.innerHTML,m=eventMetrics(x),prefs=ensureViewPrefs();let days=m.days.slice();if(prefs.summaryDaySort==='sales-desc')days.sort((a,b)=>b.sales-a.sales);else if(prefs.summaryDaySort==='qty-desc')days.sort((a,b)=>b.qty-a.qty);app.innerHTML=`<div class="printarea"><h1>${esc(x.name)} イベント集計</h1><p>${x.start} ～ ${x.end}</p><h2>総売上：${yen(m.total)}</h2><h2>手数料・経費：${yen(m.fee)}</h2><h2>利益：${yen(m.profit)}</h2>${days.map(d=>`<p>${d.day}　売上 ${yen(d.sales)}　${d.qty}個　${d.groups}組</p>`).join("")}</div>`;window.print();app.innerHTML=old;}
+
 
 if("serviceWorker"in navigator)navigator.serviceWorker.register("./sw.js").catch(()=>{});
 cloudInit();
