@@ -190,6 +190,7 @@ function mergeCloudData(remote, local, preferLocal=true){
 function scheduleCloudSave(){
   if(!cloudReady||!cloudRef||cloudApplying)return;
   const revision=++cloudDirtyRevision;
+  setCloudStatus("☁ 変更をクラウドへ保存中…","cloudwarn");
   clearTimeout(window.__cloudSaveTimer);
   window.__cloudSaveTimer=setTimeout(()=>flushCloudSave(revision),350);
 }
@@ -200,7 +201,10 @@ function flushCloudSave(revision){
   const localSnapshot=clone(db);
   ref.transaction(current=>mergeCloudData(current,localSnapshot,true),undefined,false)
     .then(result=>{
-      if(!result.committed)return;
+      if(!result.committed){
+        setCloudStatus("⚠ クラウド保存が確定しませんでした。端末内データは保持されています。","clouderr");
+        return;
+      }
       if(ref!==cloudRef)return;
       const latest=result.snapshot?.val();
       if(latest&&revision===cloudDirtyRevision){
@@ -210,7 +214,7 @@ function flushCloudSave(revision){
         localSave();
         cloudApplying=false;
         cloudLastSyncedRevision=revision;
-        setCloudStatus("☁ 同期中："+(cloudUser?.email||"接続済み"),"cloudok");
+        setCloudStatus("☁ 同期接続済み："+(cloudUser?.email||"接続済み"),"cloudok");
         render();
       }
     })
@@ -263,8 +267,8 @@ async function cloudLogout(){await firebase.auth().signOut()}
 function cloudInit(){
   const cfg=window.TART_FIREBASE_CONFIG||{};
   if(!cfg.apiKey||!cfg.projectId||!cfg.databaseURL){
-    setCloudStatus("⚠ クラウド設定待ち","cloudwarn");
-    document.getElementById("app").innerHTML=cloudSetupView(); return;
+    setCloudStatus("⚠ クラウド設定待ち（端末内データは表示できます）","cloudwarn");
+    render(); return;
   }
   try{
     if(!firebase.apps?.length)firebase.initializeApp(cfg);
@@ -272,48 +276,58 @@ function cloudInit(){
       if(cloudListenerRef){cloudListenerRef.off("value");cloudListenerRef=null;}
       cloudUser=user||null; cloudReady=false; cloudRef=null;
       if(!user){
-        setCloudStatus("☁ 未ログイン");
-        document.getElementById("app").innerHTML=cloudLoginView(); return;
+        setCloudStatus("☁ 未ログイン（端末内データを表示中）","cloudwarn");
+        render(); return;
       }
       const ref=firebase.database().ref("users/"+user.uid+"/app");
       cloudRef=ref;
-      setCloudStatus("☁ クラウド同期中…");
-      ref.once("value").then(snap=>{
+      setCloudStatus("☁ クラウド接続を確認中…");
+      const timeout=new Promise((_,reject)=>setTimeout(()=>reject(new Error("Firebaseの読み込みが15秒以内に完了しません。通信またはデータベース設定を確認してください。")),15000));
+      Promise.race([ref.once("value"),timeout]).then(snap=>{
         if(ref!==cloudRef)return;
         const remote=snap.val();
-        // 起動時は端末にしか残っていないイベントも保護し、削除済みIDは復活させない。
+        // 起動時はクラウドを優先して既存データを読み込み、端末内データも統合する。
         if(remote){db=mergeCloudData(remote,db,false);normalizeDb();normalizeAllGroupNumbers();}
         localSave();
         cloudReady=true;
         cloudLastSyncedRevision=cloudDirtyRevision;
-        setCloudStatus("☁ 同期中："+user.email,"cloudok");
+        setCloudStatus("☁ 同期接続済み："+user.email,"cloudok");
         render();
-        // 起動時に端末側にだけあるデータがあれば、transactionで安全に統合する。
         if(!remote || JSON.stringify(db)!==JSON.stringify(remote))scheduleCloudSave();
         cloudListenerRef=ref;
         ref.on("value",snap2=>{
           if(!cloudReady||cloudApplying||ref!==cloudRef)return;
           const value=snap2.val();if(!value)return;
-          // 保存待ちの端末データがある間は、古い通知で画面側を巻き戻さない。
           if(cloudDirtyRevision>cloudLastSyncedRevision)return;
           cloudApplying=true;
-          db=mergeCloudData(value,db,false);
-          normalizeDb();
-          const groupChanged=normalizeAllGroupNumbers();
-          localSave();
-          cloudApplying=false;
-          render();
-          setCloudStatus("☁ 同期中："+user.email,"cloudok");
-          if(groupChanged)scheduleCloudSave();
+          try{
+            db=mergeCloudData(value,db,false);
+            normalizeDb();
+            const groupChanged=normalizeAllGroupNumbers();
+            localSave();
+            render();
+            setCloudStatus("☁ 同期接続済み："+user.email,"cloudok");
+            if(groupChanged)scheduleCloudSave();
+          }catch(err){
+            console.error("Cloud update apply error",err);
+            setCloudStatus("⚠ 同期データ反映エラー："+(err?.message||err),"clouderr");
+          }finally{cloudApplying=false;}
         },err=>setCloudStatus("⚠ 同期監視エラー："+(err?.message||err),"clouderr"));
       }).catch(err=>{
-        setCloudStatus("⚠ クラウド接続エラー："+(err?.message||err),"clouderr");
-        document.getElementById("app").innerHTML=cloudLoginView();
+        if(ref!==cloudRef)return;
+        cloudReady=false;
+        setCloudStatus("⚠ クラウド読み込み失敗："+(err?.message||err)+"（端末内データは保持）","clouderr");
+        render();
       });
+    },err=>{
+      cloudReady=false;
+      setCloudStatus("⚠ ログイン状態の確認エラー："+(err?.message||err)+"（端末内データは保持）","clouderr");
+      render();
     });
   }catch(err){
-    setCloudStatus("⚠ Firebase初期化エラー："+(err?.message||err),"clouderr");
-    document.getElementById("app").innerHTML=cloudSetupView();
+    cloudReady=false;
+    setCloudStatus("⚠ Firebase初期化エラー："+(err?.message||err)+"（端末内データは保持）","clouderr");
+    render();
   }
 }
 
@@ -350,12 +364,8 @@ function migrateStockV3(){
 }
 migrateStockV3();
 
-/* 旧版で一度だけ会計データを初期化した仕組みはそのまま維持。
-   すでに実行済み端末では何も起きない。 */
-if(!localStorage.getItem(CLEAR_MARK)){
-  (db.events||[]).forEach(ev=>{ev.transactions=[];ev.cart=[];ev.closed={};ev.editTxId=null;ev.fees={};});
-  save(); localStorage.setItem(CLEAR_MARK,"1");
-}
+/* 安全対策：旧版にあった会計データ一括初期化処理は実行しない。
+   売上・カート・締め情報・経費を端末起動時に消去しない。 */
 
 function toast(msg){
   const t=document.getElementById("toast"); if(!t)return;
@@ -585,12 +595,7 @@ function saveManualDay(){
 
     // localStorageへ即時保存。Firebaseの保存方式そのものは変更しない。
     localSave();
-    if(cloudReady&&cloudRef&&!cloudApplying){
-      clearTimeout(window.__cloudSaveTimer);
-      window.__cloudSaveTimer= setTimeout(()=>{
-        cloudRef.set(db).catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr"));
-      },0);
-    }
+    if(cloudReady&&cloudRef&&!cloudApplying)scheduleCloudSave();
 
     // ここで再集計されるので「イベント振り返り・分析」に即反映する。
     db.tab="summary";
