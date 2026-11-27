@@ -190,7 +190,7 @@ function mergeCloudData(remote, local, preferLocal=true){
 function scheduleCloudSave(){
   if(!cloudReady||!cloudRef||cloudApplying)return;
   const revision=++cloudDirtyRevision;
-  setCloudStatus("☁ 変更をクラウドへ保存中…","cloudwarn");
+  setCloudStatus("☁ クラウドへ保存処理中…","cloudwarn");
   clearTimeout(window.__cloudSaveTimer);
   window.__cloudSaveTimer=setTimeout(()=>flushCloudSave(revision),350);
 }
@@ -199,6 +199,13 @@ function flushCloudSave(revision){
   cloudWriteRunning=true;
   const ref=cloudRef;
   const localSnapshot=clone(db);
+  // Firebaseのtransactionがネットワーク待ちで長時間返らない場合も、
+  // 端末内データを保持したまま画面に状況を表示する。
+  const waitNotice=setTimeout(()=>{
+    if(ref===cloudRef && cloudWriteRunning){
+      setCloudStatus("⚠ クラウド応答待ち：保存処理が完了していません。端末内データは保持されています（通信・Firebase権限を確認）","clouderr");
+    }
+  },12000);
   ref.transaction(current=>mergeCloudData(current,localSnapshot,true),undefined,false)
     .then(result=>{
       if(!result.committed){
@@ -220,6 +227,7 @@ function flushCloudSave(revision){
     })
     .catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr"))
     .finally(()=>{
+      clearTimeout(waitNotice);
       cloudWriteRunning=false;
       if(cloudReady&&cloudDirtyRevision>cloudLastSyncedRevision){
         clearTimeout(window.__cloudSaveTimer);
