@@ -112,6 +112,7 @@ let db=JSON.parse(localStorage.getItem(KEY)||"null")||{
 function normalizeDb(){
   if(!db || typeof db!=="object") db={};
   db.events=Array.isArray(db.events)?db.events:[];
+  db.deletedEvents=db.deletedEvents&&typeof db.deletedEvents==="object"?db.deletedEvents:{};
   db.products=Array.isArray(db.products)&&db.products.length?db.products:base.map(x=>({id:x[0],name:x[1],price:x[2]}));
   db.staff=Array.isArray(db.staff)?db.staff:["スタッフ1","スタッフ2"];
   db.payments=Array.isArray(db.payments)&&db.payments.length?db.payments:["現金","PayPay"];
@@ -158,13 +159,73 @@ function normalizeDb(){
 }
 normalizeDb();
 let cloudUser=null, cloudReady=false, cloudRef=null, cloudApplying=false;
-const localSave=()=>localStorage.setItem(KEY,JSON.stringify(db));
+let cloudDirtyRevision=0, cloudLastSyncedRevision=0, cloudWriteRunning=false, cloudListenerRef=null;
+const localSave=()=>{
+  try{localStorage.setItem(KEY,JSON.stringify(db));}
+  catch(err){setCloudStatus("⚠ 端末保存エラー：空き容量を確認してください", "clouderr"); throw err;}
+};
+function makeId(prefix="e"){
+  if(window.crypto?.randomUUID) return prefix+window.crypto.randomUUID().replace(/-/g,"");
+  return prefix+Date.now().toString(36)+Math.random().toString(36).slice(2,12);
+}
+function mergeCloudData(remote, local, preferLocal=true){
+  const r=remote&&typeof remote==="object"?remote:{};
+  const l=local&&typeof local==="object"?local:{};
+  const deleted={...(r.deletedEvents||{}),...(l.deletedEvents||{})};
+  const byId=new Map();
+  const add=(ev,prefer)=>{
+    if(!ev||typeof ev!=="object"||!ev.id||deleted[ev.id])return;
+    const old=byId.get(String(ev.id));
+    if(!old||prefer)byId.set(String(ev.id),ev);
+  };
+  (r.events||[]).forEach(ev=>add(ev,false));
+  (l.events||[]).forEach(ev=>add(ev,preferLocal));
+  const merged={...r,...l,events:Array.from(byId.values()),deletedEvents:deleted};
+  ["products","staff","payments"].forEach(k=>{
+    if(Array.isArray(l[k])&&l[k].length)merged[k]=l[k];
+    else if(Array.isArray(r[k]))merged[k]=r[k];
+  });
+  return merged;
+}
+function scheduleCloudSave(){
+  if(!cloudReady||!cloudRef||cloudApplying)return;
+  const revision=++cloudDirtyRevision;
+  clearTimeout(window.__cloudSaveTimer);
+  window.__cloudSaveTimer=setTimeout(()=>flushCloudSave(revision),350);
+}
+function flushCloudSave(revision){
+  if(!cloudReady||!cloudRef||cloudWriteRunning)return;
+  cloudWriteRunning=true;
+  const ref=cloudRef;
+  const localSnapshot=clone(db);
+  ref.transaction(current=>mergeCloudData(current,localSnapshot,true),undefined,false)
+    .then(result=>{
+      if(!result.committed)return;
+      if(ref!==cloudRef)return;
+      const latest=result.snapshot?.val();
+      if(latest&&revision===cloudDirtyRevision){
+        cloudApplying=true;
+        db=mergeCloudData(latest,db,false);
+        normalizeDb();
+        localSave();
+        cloudApplying=false;
+        cloudLastSyncedRevision=revision;
+        setCloudStatus("☁ 同期中："+(cloudUser?.email||"接続済み"),"cloudok");
+        render();
+      }
+    })
+    .catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr"))
+    .finally(()=>{
+      cloudWriteRunning=false;
+      if(cloudReady&&cloudDirtyRevision>cloudLastSyncedRevision){
+        clearTimeout(window.__cloudSaveTimer);
+        window.__cloudSaveTimer=setTimeout(()=>flushCloudSave(cloudDirtyRevision),250);
+      }
+    });
+}
 const save=()=>{
   localSave();
-  if(cloudReady&&cloudRef&&!cloudApplying){
-    clearTimeout(window.__cloudSaveTimer);
-    window.__cloudSaveTimer=setTimeout(()=>cloudRef.set(db).catch(err=>setCloudStatus("⚠ 同期エラー："+(err?.message||err),"clouderr")),120);
-  }
+  scheduleCloudSave();
 };
 function setCloudStatus(msg,cls=""){
   const el=document.getElementById("cloudbar");
@@ -206,47 +267,45 @@ function cloudInit(){
     document.getElementById("app").innerHTML=cloudSetupView(); return;
   }
   try{
-    firebase.initializeApp(cfg);
+    if(!firebase.apps?.length)firebase.initializeApp(cfg);
     firebase.auth().onAuthStateChanged(user=>{
+      if(cloudListenerRef){cloudListenerRef.off("value");cloudListenerRef=null;}
       cloudUser=user||null; cloudReady=false; cloudRef=null;
       if(!user){
         setCloudStatus("☁ 未ログイン");
         document.getElementById("app").innerHTML=cloudLoginView(); return;
       }
-      cloudRef=firebase.database().ref("users/"+user.uid+"/app");
+      const ref=firebase.database().ref("users/"+user.uid+"/app");
+      cloudRef=ref;
       setCloudStatus("☁ クラウド同期中…");
-      cloudRef.once("value").then(snap=>{
+      ref.once("value").then(snap=>{
+        if(ref!==cloudRef)return;
         const remote=snap.val();
-        let groupChanged=false;
-        if(remote){
-          db={
-            ...db,...remote,
-            events:Array.isArray(remote.events)?remote.events:db.events,
-            products:Array.isArray(remote.products)?remote.products:db.products,
-            staff:Array.isArray(remote.staff)?remote.staff:db.staff,
-            payments:Array.isArray(remote.payments)?remote.payments:db.payments
-          };
-          normalizeDb();
-          groupChanged=normalizeAllGroupNumbers();
-        }
+        // 起動時は端末にしか残っていないイベントも保護し、削除済みIDは復活させない。
+        if(remote){db=mergeCloudData(remote,db,false);normalizeDb();normalizeAllGroupNumbers();}
         localSave();
         cloudReady=true;
-        if(groupChanged) save();
+        cloudLastSyncedRevision=cloudDirtyRevision;
         setCloudStatus("☁ 同期中："+user.email,"cloudok");
         render();
-        if(!remote) cloudRef.set(db).catch(err=>setCloudStatus("⚠ 初回保存エラー："+(err?.message||err),"clouderr"));
-        cloudRef.on("value",snap2=>{
-          if(!cloudReady||cloudApplying)return;
-          const v=snap2.val(); if(!v)return;
+        // 起動時に端末側にだけあるデータがあれば、transactionで安全に統合する。
+        if(!remote || JSON.stringify(db)!==JSON.stringify(remote))scheduleCloudSave();
+        cloudListenerRef=ref;
+        ref.on("value",snap2=>{
+          if(!cloudReady||cloudApplying||ref!==cloudRef)return;
+          const value=snap2.val();if(!value)return;
+          // 保存待ちの端末データがある間は、古い通知で画面側を巻き戻さない。
+          if(cloudDirtyRevision>cloudLastSyncedRevision)return;
           cloudApplying=true;
-          db=v; normalizeDb();
+          db=mergeCloudData(value,db,false);
+          normalizeDb();
           const groupChanged=normalizeAllGroupNumbers();
           localSave();
-          render();
           cloudApplying=false;
-          if(groupChanged) save();
+          render();
           setCloudStatus("☁ 同期中："+user.email,"cloudok");
-        });
+          if(groupChanged)scheduleCloudSave();
+        },err=>setCloudStatus("⚠ 同期監視エラー："+(err?.message||err),"clouderr"));
       }).catch(err=>{
         setCloudStatus("⚠ クラウド接続エラー："+(err?.message||err),"clouderr");
         document.getElementById("app").innerHTML=cloudLoginView();
@@ -1074,14 +1133,14 @@ function settings(x){
 }
 function newEvent(){
   const plist=orderedMasterProducts();
-  const id="e"+Date.now();
+  const id=makeId("e");
   const catalog=plist.map(p=>({id:p.id,name:p.name,price:Number(p.price||0),active:true}));
   const ev={id,name:"新しいイベント",start:jpToday(),end:jpToday(),open:"10:00",close:"17:00",slot:1,feeMode:"daily",feeTotal:0,fees:{},stock:[],stockMoves:[],undoStack:[],transactions:[],productCatalog:catalog,productOrder:catalog.map(p=>p.id),prices:Object.fromEntries(catalog.map(p=>[p.id,p.price])),closed:{},staffByDay:{},dayNotes:{},dayArchives:{},manualDays:{},takeBackByDay:{},wasteByDay:{},resetUndoStack:[],eventClosed:false,closedAt:null,cart:[]};
   db.events.unshift(ev);location.hash=id;db.tab="settings";save();render();
 }
 function duplicateEvent(){
   const x=e();if(!x)return;if(!confirm(`「${x.name}」を新しいイベントとして複製しますか？\n商品ラインナップ・価格・時間設定だけを引き継ぎ、売上・在庫・日報・経費・締め状態は引き継ぎません。`))return;
-  ensureEventProductCatalog(x);const id="e"+Date.now(),catalog=clone(x.productCatalog||[]);const ev={id,name:x.name+"（複製）",start:jpToday(),end:jpToday(),open:x.open,close:x.close,slot:x.slot,feeMode:x.feeMode,feeTotal:0,fees:{},stock:[],stockMoves:[],undoStack:[],transactions:[],productCatalog:catalog,productOrder:clone(x.productOrder||catalog.map(p=>p.id)),prices:clone(x.prices||{}),closed:{},staffByDay:{},dayNotes:{},dayArchives:{},manualDays:{},takeBackByDay:{},wasteByDay:{},resetUndoStack:[],eventClosed:false,closedAt:null,cart:[]};
+  ensureEventProductCatalog(x);const id=makeId("e"),catalog=clone(x.productCatalog||[]);const ev={id,name:x.name+"（複製）",start:jpToday(),end:jpToday(),open:x.open,close:x.close,slot:x.slot,feeMode:x.feeMode,feeTotal:0,fees:{},stock:[],stockMoves:[],undoStack:[],transactions:[],productCatalog:catalog,productOrder:clone(x.productOrder||catalog.map(p=>p.id)),prices:clone(x.prices||{}),closed:{},staffByDay:{},dayNotes:{},dayArchives:{},manualDays:{},takeBackByDay:{},wasteByDay:{},resetUndoStack:[],eventClosed:false,closedAt:null,cart:[]};
   db.events.unshift(ev);location.hash=id;db.tab="settings";save();render();toast("イベント設定を複製しました");
 }
 function saveEvent(){let x=e();if(!x){newEvent();return}if(x.eventClosed)return alert("締め済みイベントの設定は変更できません。");const st=document.getElementById("start").value,en=document.getElementById("end").value;if(!st||!en||en<st)return alert("開催期間を正しく入力してください");const op=document.getElementById("open").value,cl=document.getElementById("close").value;if(!op||!cl||op>=cl)return alert("販売開始・終了時刻を正しく入力してください（終了は開始より後）");pushUndo(x,"イベント設定を変更");Object.assign(x,{name:(document.getElementById("ename").value||x.name).trim(),start:st,end:en,open:op,close:cl,slot:Number(document.getElementById("slot").value),feeMode:document.getElementById("feeMode").value,feeTotal:Number(document.getElementById("feeTotal").value)||0});ensureEventProductCatalog(x);save();db.tab="sale";render();}
@@ -1102,7 +1161,7 @@ function closeEvent(){
   x.eventClosed=true;x.closedAt=now;
   save();render();toast("イベントを締めました。次のイベントを作成できます");
 }
-function delEvent(){let x=e();if(!x)return;if(x.eventClosed&&!confirm("締め済みイベントです。履歴も含めて完全に削除します。バックアップ済みですか？"))return;if(confirm("このイベントの全データを削除しますか？\n会計・在庫・日報・締め済み履歴もすべて削除されます。")){db.events=db.events.filter(q=>q.id!==x.id);location.hash="";db.tab="events";save();render()}}
+function delEvent(){let x=e();if(!x)return;if(x.eventClosed&&!confirm("締め済みイベントです。履歴も含めて完全に削除します。バックアップ済みですか？"))return;if(confirm("このイベントの全データを削除しますか？\n会計・在庫・日報・締め済み履歴もすべて削除されます。")){db.deletedEvents=db.deletedEvents||{};db.deletedEvents[x.id]=Date.now();db.events=db.events.filter(q=>q.id!==x.id);location.hash="";db.tab="events";save();render()}}
 function savePrices(){let x=e();if(!x)return;if(x.eventClosed)return alert("締め済みイベントの価格は変更できません。");x.prices=x.prices||{};db.products.forEach(p=>x.prices[p.id]=Math.max(0,Number(document.getElementById("ep_"+p.id).value)||0));save();render()}
 function saveProduct(id){const p=db.products.find(q=>q.id===id);if(!p)return;const name=(document.getElementById("n_"+id)?.value||"").trim(),price=Number(document.getElementById("p_"+id)?.value);if(!name)return alert("商品名を入力してください。");if(!Number.isFinite(price)||price<0)return alert("価格は0円以上で入力してください。");if(db.products.some(q=>q.id!==id&&String(q.name).trim()===name))return alert("同じ商品名がすでにあります。");p.name=name;p.price=Math.floor(price);save();render();toast(`商品マスター「${name}」を保存しました。既存イベントには影響しません`);}
 function addProduct(){const id="p"+Date.now();db.products.push({id,name:"新商品",price:400});db.productOrder=normalizeOrder(db.productOrder,db.products);save();render();setTimeout(()=>{const el=document.getElementById("n_"+id);if(el){el.focus();el.select();}},0);toast("新商品を追加しました。商品名と価格を入力して「保存」を押してください");}
