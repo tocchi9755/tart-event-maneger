@@ -168,6 +168,31 @@ function makeId(prefix="e"){
   if(window.crypto?.randomUUID) return prefix+window.crypto.randomUUID().replace(/-/g,"");
   return prefix+Date.now().toString(36)+Math.random().toString(36).slice(2,12);
 }
+// Firebase Realtime Databaseではキーに . # $ / [ ] を使えないため、
+// クラウドへ送るJSONのキーだけを可逆変換する。端末内データや画面表示名は変更しない。
+const FIREBASE_KEY_PREFIX="__fbkey__";
+function firebaseEncodeKey(key){
+  const s=String(key);
+  if(!/[.#$\/\[\]]/.test(s) && !s.startsWith(FIREBASE_KEY_PREFIX)) return s;
+  return FIREBASE_KEY_PREFIX+btoa(unescape(encodeURIComponent(s))).replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_");
+}
+function firebaseDecodeKey(key){
+  if(typeof key!=="string"||!key.startsWith(FIREBASE_KEY_PREFIX))return key;
+  try{
+    const b=key.slice(FIREBASE_KEY_PREFIX.length).replace(/-/g,"+").replace(/_/g,"/");
+    return decodeURIComponent(escape(atob(b+"=".repeat((4-b.length%4)%4))));
+  }catch(e){return key;}
+}
+function transformFirebaseKeys(value,decode=false){
+  if(Array.isArray(value))return value.map(v=>transformFirebaseKeys(v,decode));
+  if(!value||typeof value!=="object")return value;
+  const out={};
+  Object.entries(value).forEach(([k,v])=>{
+    const key=decode?firebaseDecodeKey(k):firebaseEncodeKey(k);
+    out[key]=transformFirebaseKeys(v,decode);
+  });
+  return out;
+}
 function mergeCloudData(remote, local, preferLocal=true){
   const r=remote&&typeof remote==="object"?remote:{};
   const l=local&&typeof local==="object"?local:{};
@@ -206,14 +231,14 @@ function flushCloudSave(revision){
       setCloudStatus("⚠ クラウド応答待ち：保存処理が完了していません。端末内データは保持されています（通信・Firebase権限を確認）","clouderr");
     }
   },12000);
-  ref.transaction(current=>mergeCloudData(current,localSnapshot,true),undefined,false)
+  ref.transaction(current=>transformFirebaseKeys(mergeCloudData(transformFirebaseKeys(current,true),localSnapshot,true),false),undefined,false)
     .then(result=>{
       if(!result.committed){
         setCloudStatus("⚠ クラウド保存が確定しませんでした。端末内データは保持されています。","clouderr");
         return;
       }
       if(ref!==cloudRef)return;
-      const latest=result.snapshot?.val();
+      const latest=transformFirebaseKeys(result.snapshot?.val(),true);
       if(latest&&revision===cloudDirtyRevision){
         cloudApplying=true;
         db=mergeCloudData(latest,db,false);
@@ -293,7 +318,7 @@ function cloudInit(){
       const timeout=new Promise((_,reject)=>setTimeout(()=>reject(new Error("Firebaseの読み込みが15秒以内に完了しません。通信またはデータベース設定を確認してください。")),15000));
       Promise.race([ref.once("value"),timeout]).then(snap=>{
         if(ref!==cloudRef)return;
-        const remote=snap.val();
+        const remote=transformFirebaseKeys(snap.val(),true);
         // 起動時はクラウドを優先して既存データを読み込み、端末内データも統合する。
         if(remote){db=mergeCloudData(remote,db,false);normalizeDb();normalizeAllGroupNumbers();}
         localSave();
@@ -305,7 +330,7 @@ function cloudInit(){
         cloudListenerRef=ref;
         ref.on("value",snap2=>{
           if(!cloudReady||cloudApplying||ref!==cloudRef)return;
-          const value=snap2.val();if(!value)return;
+          const value=transformFirebaseKeys(snap2.val(),true);if(!value)return;
           if(cloudDirtyRevision>cloudLastSyncedRevision)return;
           cloudApplying=true;
           try{
