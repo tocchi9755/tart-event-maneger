@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="タルト販売管理">
 <link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>峠のチーズタルト｜イベント販売管理 V11</title>
+<title>峠のチーズタルト｜イベント販売管理 V11.2</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,"Noto Sans JP",sans-serif}
 header{background:#111827;color:#fff;padding:14px 14px 12px;position:sticky;top:0;z-index:20}h1{font-size:17px;margin:0 0 3px}.sub{font-size:12px;opacity:.8}
@@ -69,9 +69,10 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 <script src="./firebase-config.js"></script>
 <script>
 /*
-  タルト販売管理 v11.1（同期の設定統合・Firebaseキー安全化）
+  タルト販売管理 v11.2（初回同期のPC優先移行・保存確認表示）
   タルト販売管理 v11.0（柔軟な商品・集計・表示設定）
   - Firebaseの既存保存先・既存KEYを維持
+  - 初回のクラウド移行は最初に開いたPCの端末データを優先し、移行後はクラウドを優先
   - iPhone/PC/Androidの同期方式を変更しない
   - 在庫の物理フローを明確化
     初回搬入 → ショーケース
@@ -256,7 +257,7 @@ function flushCloudSave(revision){
         localSave();
         cloudApplying=false;
         cloudLastSyncedRevision=revision;
-        setCloudStatus("☁ 同期接続済み："+(cloudUser?.email||"接続済み"),"cloudok");
+        setCloudStatus("☁ クラウド保存確認済み："+(cloudUser?.email||"接続済み"),"cloudok");
         render();
       }
     })
@@ -329,14 +330,20 @@ function cloudInit(){
       Promise.race([ref.once("value"),timeout]).then(snap=>{
         if(ref!==cloudRef)return;
         const remote=decodeCloudKeys(snap.val());
-        // 起動時はクラウドを優先して既存データを読み込み、端末内データも統合する。
-        if(remote){db=mergeCloudData(remote,db,false);normalizeDb();normalizeAllGroupNumbers();}
+        // 初回移行だけはPC側の既存データを優先する。
+        // _syncMeta.bootstrapAt はFirebase上に保存されるため、次にiPhoneを開いたときは
+        // クラウド側を正として読み込み、古い端末データで戻さない。
+        const firstBootstrap=!remote || !remote._syncMeta || !remote._syncMeta.bootstrapAt;
+        if(remote){db=mergeCloudData(remote,db,firstBootstrap);normalizeDb();normalizeAllGroupNumbers();}
+        db._syncMeta={...(remote?remote._syncMeta||{}:{}),...(db._syncMeta||{})};
+        if(firstBootstrap)db._syncMeta.bootstrapAt=new Date().toISOString();
         localSave();
         cloudReady=true;
         cloudLastSyncedRevision=cloudDirtyRevision;
-        setCloudStatus("☁ 同期接続済み："+user.email,"cloudok");
+        const needsBootstrapSave=!remote || JSON.stringify(db)!==JSON.stringify(remote);
+        setCloudStatus(needsBootstrapSave?"☁ クラウド読込済み・保存確認中："+user.email:"☁ クラウド読込確認済み："+user.email,needsBootstrapSave?"cloudwarn":"cloudok");
         render();
-        if(!remote || JSON.stringify(db)!==JSON.stringify(remote))scheduleCloudSave();
+        if(needsBootstrapSave)scheduleCloudSave();
         cloudListenerRef=ref;
         ref.on("value",snap2=>{
           if(!cloudReady||cloudApplying||ref!==cloudRef)return;
@@ -349,7 +356,7 @@ function cloudInit(){
             const groupChanged=normalizeAllGroupNumbers();
             localSave();
             render();
-            setCloudStatus("☁ 同期接続済み："+user.email,"cloudok");
+            setCloudStatus("☁ クラウド受信確認済み："+user.email,"cloudok");
             if(groupChanged)scheduleCloudSave();
           }catch(err){
             console.error("Cloud update apply error",err);
