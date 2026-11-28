@@ -69,6 +69,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:7px 4px;b
 <script src="./firebase-config.js"></script>
 <script>
 /*
+  タルト販売管理 v11.1（同期の設定統合・Firebaseキー安全化）
   タルト販売管理 v11.0（柔軟な商品・集計・表示設定）
   - Firebaseの既存保存先・既存KEYを維持
   - iPhone/PC/Androidの同期方式を変更しない
@@ -169,27 +170,24 @@ function makeId(prefix="e"){
   return prefix+Date.now().toString(36)+Math.random().toString(36).slice(2,12);
 }
 // Firebase Realtime Databaseではキーに . # $ / [ ] を使えないため、
-// クラウドへ送るJSONのキーだけを可逆変換する。端末内データや画面表示名は変更しない。
-const FIREBASE_KEY_PREFIX="__fbkey__";
-function firebaseEncodeKey(key){
-  const s=String(key);
-  if(!/[.#$\/\[\]]/.test(s) && !s.startsWith(FIREBASE_KEY_PREFIX)) return s;
-  return FIREBASE_KEY_PREFIX+btoa(unescape(encodeURIComponent(s))).replace(/=/g,"").replace(/\+/g,"-").replace(/\//g,"_");
-}
-function firebaseDecodeKey(key){
-  if(typeof key!=="string"||!key.startsWith(FIREBASE_KEY_PREFIX))return key;
-  try{
-    const b=key.slice(FIREBASE_KEY_PREFIX.length).replace(/-/g,"+").replace(/_/g,"/");
-    return decodeURIComponent(escape(atob(b+"=".repeat((4-b.length%4)%4))));
-  }catch(e){return key;}
-}
-function transformFirebaseKeys(value,decode=false){
-  if(Array.isArray(value))return value.map(v=>transformFirebaseKeys(v,decode));
+// オブジェクトのキーだけを可逆エンコードする（値・表示名・売上内容は変更しない）。
+function encodeCloudKeys(value){
+  if(Array.isArray(value))return value.map(encodeCloudKeys);
   if(!value||typeof value!=="object")return value;
   const out={};
-  Object.entries(value).forEach(([k,v])=>{
-    const key=decode?firebaseDecodeKey(k):firebaseEncodeKey(k);
-    out[key]=transformFirebaseKeys(v,decode);
+  Object.keys(value).forEach(key=>{
+    const safe=key.replace(/[%.$#\/\[\]]/g,ch=>({"%":"%25",".":"%2E","$":"%24","#":"%23","/":"%2F","[":"%5B","]":"%5D"}[ch]));
+    out[safe]=encodeCloudKeys(value[key]);
+  });
+  return out;
+}
+function decodeCloudKeys(value){
+  if(Array.isArray(value))return value.map(decodeCloudKeys);
+  if(!value||typeof value!=="object")return value;
+  const out={};
+  Object.keys(value).forEach(key=>{
+    const original=key.replace(/%(25|2E|24|23|2F|5B|5D)/g,(_,code)=>({"25":"%","2E":".","24":"$","23":"#","2F":"/","5B":"[","5D":"]"}[code]));
+    out[original]=decodeCloudKeys(value[key]);
   });
   return out;
 }
@@ -206,10 +204,22 @@ function mergeCloudData(remote, local, preferLocal=true){
   (r.events||[]).forEach(ev=>add(ev,false));
   (l.events||[]).forEach(ev=>add(ev,preferLocal));
   const merged={...r,...l,events:Array.from(byId.values()),deletedEvents:deleted};
+  // 商品・スタッフ・支払方法は、設定が多く揃っている側を採用する。
+  // 今回のように片方の端末だけ設定が欠けている場合、少ない側で上書きされない。
+  const chosen={};
   ["products","staff","payments"].forEach(k=>{
-    if(Array.isArray(l[k])&&l[k].length)merged[k]=l[k];
-    else if(Array.isArray(r[k]))merged[k]=r[k];
+    const ra=Array.isArray(r[k])?r[k]:[], la=Array.isArray(l[k])?l[k]:[];
+    chosen[k]=(la.length>ra.length)?la:(ra.length>la.length)?ra:(preferLocal?la:ra);
+    merged[k]=chosen[k];
   });
+  // 商品並び順は採用した商品マスター側に合わせる。
+  const productSource=chosen.products===l.products?l:r;
+  if(Array.isArray(productSource.productOrder))merged.productOrder=productSource.productOrder;
+  else if(Array.isArray(l.productOrder)&&preferLocal)merged.productOrder=l.productOrder;
+  // 手動バックアップは両端末の記録を統合し、既存分を片側だけで消さない。
+  merged.manualBackups={...(r.manualBackups||{}),...(l.manualBackups||{})};
+  merged.manualDeleted={...(r.manualDeleted||{}),...(l.manualDeleted||{})};
+  merged.viewPrefs=preferLocal?(l.viewPrefs||r.viewPrefs):(r.viewPrefs||l.viewPrefs);
   return merged;
 }
 function scheduleCloudSave(){
@@ -231,14 +241,14 @@ function flushCloudSave(revision){
       setCloudStatus("⚠ クラウド応答待ち：保存処理が完了していません。端末内データは保持されています（通信・Firebase権限を確認）","clouderr");
     }
   },12000);
-  ref.transaction(current=>transformFirebaseKeys(mergeCloudData(transformFirebaseKeys(current,true),localSnapshot,true),false),undefined,false)
+  ref.transaction(current=>encodeCloudKeys(mergeCloudData(decodeCloudKeys(current),localSnapshot,true)),undefined,false)
     .then(result=>{
       if(!result.committed){
         setCloudStatus("⚠ クラウド保存が確定しませんでした。端末内データは保持されています。","clouderr");
         return;
       }
       if(ref!==cloudRef)return;
-      const latest=transformFirebaseKeys(result.snapshot?.val(),true);
+      const latest=decodeCloudKeys(result.snapshot?.val());
       if(latest&&revision===cloudDirtyRevision){
         cloudApplying=true;
         db=mergeCloudData(latest,db,false);
@@ -318,7 +328,7 @@ function cloudInit(){
       const timeout=new Promise((_,reject)=>setTimeout(()=>reject(new Error("Firebaseの読み込みが15秒以内に完了しません。通信またはデータベース設定を確認してください。")),15000));
       Promise.race([ref.once("value"),timeout]).then(snap=>{
         if(ref!==cloudRef)return;
-        const remote=transformFirebaseKeys(snap.val(),true);
+        const remote=decodeCloudKeys(snap.val());
         // 起動時はクラウドを優先して既存データを読み込み、端末内データも統合する。
         if(remote){db=mergeCloudData(remote,db,false);normalizeDb();normalizeAllGroupNumbers();}
         localSave();
@@ -330,7 +340,7 @@ function cloudInit(){
         cloudListenerRef=ref;
         ref.on("value",snap2=>{
           if(!cloudReady||cloudApplying||ref!==cloudRef)return;
-          const value=transformFirebaseKeys(snap2.val(),true);if(!value)return;
+          const value=decodeCloudKeys(snap2.val());if(!value)return;
           if(cloudDirtyRevision>cloudLastSyncedRevision)return;
           cloudApplying=true;
           try{
@@ -364,7 +374,6 @@ function cloudInit(){
   }
 }
 
-const CLEAR_MARK="toge_tart_manager_clear_accounts_20260902";
 const STOCK_V2_MARK="toge_tart_manager_stock_v2_20260907";
 const V3_MARK="toge_tart_manager_stock_v3_20260912";
 
@@ -799,7 +808,7 @@ function renderNav(){
   const x=e();
   document.getElementById("head").textContent=x?`${x.name}　${x.start} ～ ${x.end}${x.eventClosed?"　【イベント締め済み】":""}`:"イベントを登録してください";
   const arr=x?[["sale","販売"],["inventory","在庫"],["daily","日報・締め"],["summary","イベント集計"],["settings","設定"]]:[["events","イベント"],["settings","商品・設定"]];
-  document.getElementById("nav").innerHTML=arr.map(a=>`<button class="${db.tab===a[0]?'on':''}" onclick="db.tab='${a[0]}';save();render()">${a[1]}</button>`).join("");
+  document.getElementById("nav").innerHTML=arr.map(a=>`<button class="${db.tab===a[0]?'on':''}" onclick="db.tab='${a[0]}';render()">${a[1]}</button>`).join("");
 }
 function render(){
   renderNav();let x=e();
@@ -833,9 +842,9 @@ function daySelect(x){
 function switchSalesDay(d){
   const x=e();if(!x)return;
   const old=selectedDay(x);
-  if(old===d){x.selectedDay=d;save();render();return;}
+  if(old===d)return;
   x.selectedDay=d;
-  save();render();
+  localSave();render();
 }
 function sale(x){
   if(!x)return events();
